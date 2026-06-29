@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+backend/venv/
+.env
+backend/.env
+*.db
+
+# Node
+node_modules/
+dist/
+build/
+.npm/
+
+# OS
+.DS_Store
+
+# Temporary Project Files
+TEMP_ARCHITECT.md
+TEST_ARCHITECT.md
+DRAFT_USER_STORIES.md
+TEST_USER_STORIES.md
+R*.md
