@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, UTC
 from typing import List, Dict, Any
 
-from fastapi import FastAPI, Depends, HTTPException, Body
+from fastapi import FastAPI, Depends, HTTPException, Body, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from langchain_core.messages import HumanMessage, AIMessage
@@ -168,7 +168,7 @@ def execute_state_finalization(project_id: str, state: Dict[str, Any]):
 async def lifespan(application: FastAPI):
     """Initialize Postgres checkpointer, DB schemas, and seed sample users on startup."""
     global app_graph
-    pool = AsyncConnectionPool(DATABASE_URL)
+    pool = AsyncConnectionPool(DATABASE_URL, kwargs={"autocommit": True})
     checkpointer = AsyncPostgresSaver(pool)
     await checkpointer.setup()
     app_graph = workflow.compile(checkpointer=checkpointer)
@@ -355,7 +355,7 @@ async def finish_sharing(project_id: str):
 
 
 @app.post("/api/projects/{project_id}/approve-goals")
-async def approve_goals(project_id: str, db: Session = Depends(get_db)):
+async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Approve goals, trigger task generation, and persist tasks to the database."""
     config = {"configurable": {"thread_id": project_id}}
     state = await get_project_state(project_id)
@@ -424,7 +424,7 @@ async def approve_goals(project_id: str, db: Session = Depends(get_db)):
 
     # State finalization (snapshot log + architecture consolidation)
     try:
-        execute_state_finalization(project_id, updated_state_snap)
+        background_tasks.add_task(execute_state_finalization, project_id, updated_state_snap)
     except Exception as e:
         print(f"[Finalization] Error: {e}")
 
