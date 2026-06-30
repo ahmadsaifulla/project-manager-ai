@@ -349,11 +349,10 @@ function ProjectDashboard({ projects, onSelect, onCreate }: { projects: Project[
             <button
               key={opt.key}
               onClick={() => setFilter(opt.key)}
-              className={`px-3.5 py-1.5 rounded-full text-xs font-medium transition-all ${
-                filter === opt.key
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-secondary text-muted-foreground hover:text-foreground"
-              }`}
+              className={`px-3.5 py-1.5 rounded-full text-xs font-medium transition-all ${filter === opt.key
+                ? "bg-primary text-primary-foreground"
+                : "bg-secondary text-muted-foreground hover:text-foreground"
+                }`}
             >
               {opt.label}
             </button>
@@ -453,9 +452,8 @@ function KanbanTaskCard({
 
   return (
     <div
-      className={`bg-card border rounded-xl p-3.5 flex flex-col gap-3 transition-all ${
-        qcDone ? "border-green-200 bg-green-50/40" : "border-border hover:shadow-sm"
-      }`}
+      className={`bg-card border rounded-xl p-3.5 flex flex-col gap-3 transition-all ${qcDone ? "border-green-200 bg-green-50/40" : "border-border hover:shadow-sm"
+        }`}
     >
       {/* Tag + priority */}
       <div className="flex items-center justify-between">
@@ -582,22 +580,33 @@ function ChatBubble({ msg }: { msg: Message | any }) {
   return (
     <div className={`flex gap-3 ${isAI ? "" : "flex-row-reverse"}`}>
       <div
-        className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center mt-0.5 ${
-          isAI ? "bg-primary/10 text-primary" : "bg-secondary text-muted-foreground"
-        }`}
+        className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center mt-0.5 ${isAI ? "bg-primary/10 text-primary" : "bg-secondary text-muted-foreground"
+          }`}
       >
         {isAI ? <Bot size={14} /> : <User size={14} />}
       </div>
       <div className={`max-w-[78%] ${isAI ? "" : "items-end flex flex-col"}`}>
         <div
-          className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${
-            isAI
-              ? "bg-card text-card-foreground border border-border rounded-tl-sm"
-              : "bg-primary text-primary-foreground rounded-tr-sm"
-          }`}
+          className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${isAI
+            ? "bg-card text-card-foreground border border-border rounded-tl-sm"
+            : "bg-primary text-primary-foreground rounded-tr-sm"
+            }`}
         >
           {msg.content}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ThinkingIndicator() {
+  return (
+    <div className="flex gap-3 animate-pulse opacity-80 mt-2">
+      <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-primary/10 text-primary">
+        <Bot size={14} />
+      </div>
+      <div className="bg-card border border-border rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-2">
+        <span className="text-xs text-muted-foreground font-medium">Architect AI is thinking...</span>
       </div>
     </div>
   );
@@ -795,6 +804,7 @@ function ApprovedPanel({ projectState, onAddMore }: { projectState: ProjectState
 
 function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () => void }) {
   const [projectState, setProjectState] = useState<ProjectState | null>(null);
+  const [isThinking, setIsThinking] = useState(false);
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState("");
   const feedRef = useRef<HTMLDivElement>(null);
@@ -826,11 +836,28 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
   }, [messages, phase]);
 
   async function sendMessage() {
-    if (!input.trim() || phase !== "listening") return;
+    if (!input.trim() || (phase !== "listening" && projectState?.elicitation_phase !== "stress_testing")) return;
     const text = input.trim();
     setInput("");
-    await import("../api").then(api => api.sendMessage(project.id, text));
-    await fetchState();
+
+    const optimisticMsg: Message = {
+      id: `temp_${Date.now()}`,
+      role: "user",
+      content: text,
+      timestamp: new Date()
+    };
+    setProjectState(prev => prev ? {
+      ...prev,
+      messages: [...(prev.messages || []), optimisticMsg]
+    } : null);
+
+    setIsThinking(true);
+    try {
+      await import("../api").then(api => api.sendMessage(project.id, text));
+      await fetchState();
+    } finally {
+      setIsThinking(false);
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -884,9 +911,8 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                activeTab === tab.key ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-              } ${tab.key === "board" && phase !== "approved" ? "opacity-50" : ""}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === tab.key ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                } ${tab.key === "board" && phase !== "approved" ? "opacity-50" : ""}`}
             >
               {tab.icon}
               {tab.label}
@@ -918,6 +944,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
               <div ref={feedRef} className="flex-1 overflow-y-auto px-6 py-5 space-y-5 scrollbar-hidden">
                 {messages.map((msg, i) => <ChatBubble key={i} msg={msg} />)}
                 {phase === "processing" && <ProcessingDots />}
+                {isThinking && <ThinkingIndicator />}
               </div>
 
               <div className="flex-shrink-0 px-5 py-4 border-t border-border bg-card">
@@ -949,13 +976,24 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
                         }}
                       />
                     </div>
-                    <button
-                      onClick={beginAnalysis}
-                      className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-primary/40 bg-accent text-accent-foreground text-xs font-medium transition-all hover:bg-primary hover:text-primary-foreground hover:border-primary whitespace-nowrap"
-                    >
-                      <Sparkles size={13} />
-                      Begin Analysis
-                    </button>
+                    {phase === "listening" && (
+                      <button
+                        onClick={beginAnalysis}
+                        className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-primary/40 bg-accent text-accent-foreground text-xs font-medium transition-all hover:bg-primary hover:text-primary-foreground hover:border-primary whitespace-nowrap"
+                      >
+                        <Sparkles size={13} />
+                        Begin Analysis
+                      </button>
+                    )}
+                    {projectState?.elicitation_phase === "stress_testing" && projectState?.project_goals && (
+                      <button
+                        onClick={handleApprove}
+                        className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-green-500 text-white text-xs font-medium transition-all hover:bg-green-600 whitespace-nowrap"
+                      >
+                        <CheckCircle2 size={13} />
+                        Approve Goals
+                      </button>
+                    )}
                     <button
                       onClick={sendMessage}
                       disabled={!input.trim()}
