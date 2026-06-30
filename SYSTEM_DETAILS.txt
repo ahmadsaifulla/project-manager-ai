@@ -1,0 +1,41 @@
+System Details: AI Project Manager
+
+Welcome! Here is a simple, easy-to-understand breakdown of all the features, functionalities, and modules in our AI Project Manager system. 
+
+---
+
+### 1. The Frontend (What You See)
+This is the user interface of the application, built using modern web tools (React and TypeScript). 
+- **Project Dashboard**: Lets you view a list of all your projects, check their progress, and see due dates.
+- **Project Creation**: You can create new projects and give them a name, description, and status.
+- **Chat Interface**: A built-in chat window where you talk directly to the AI to explain your ideas and requirements.
+- **Task Board (Kanban)**: A visual board to see the tasks the AI generates for your project (e.g., To-Do, In Progress, Done).
+
+### 2. The Backend (The Engine Room)
+This is the hidden server that makes everything work, built with Python (FastAPI).
+- **Database Storage**: It safely stores all your projects, users, and tasks in a database (SQLite). 
+- **API Gateways**: Think of this as the messenger. When you click a button or send a chat on the Frontend, the API Gateway carries that message to the Database or the AI brain.
+- **Data Manager**: Keeps track of how tasks are related to each other (e.g., Task B cannot start until Task A is finished).
+
+### 3. The AI Brain (LangGraph & Groq LLM)
+This is where the magic happens. The system uses a "Dual-Core" AI setup, meaning there are two main AI personas working together:
+- **The Product Manager (PM) Agent**: This is the friendly AI you chat with. It translates complex technical problems into simple choices for you. It listens to your ideas, asks clarifying questions, and writes down "User Stories" (simple descriptions of what the app should do).
+- **The Hidden Architect Agent**: You never see this AI, but it works in the background. While you chat with the PM Agent, the Architect checks your ideas to make sure they are technically possible and won't break the system's code structure.
+- **The Planner Agent**: Once you say "I approve these goals," this agent takes over. It breaks your entire project down into a step-by-step to-do list for developers, complete with priority levels and time estimates.
+
+### 4. The Project Workflow (How It Operates)
+The system guides your project through a specific journey:
+- **Listening Phase**: The AI just listens to your initial idea and takes notes.
+- **Stress-Testing Phase**: The AI starts looking for holes in your idea and asks you questions to fill in the missing gaps (e.g., "Do users need to log in with an email or a phone number?").
+- **Goal Approval**: Once all questions are answered, you approve the final goals. 
+- **Task Generation**: Immediately after approval, the AI writes out all the developer tasks.
+- **Document Finalization**: The system automatically saves a "Snapshot" of your conversation and organizes a final "Architecture Document" so human developers know exactly what to build.
+
+### 5. Document Workspaces
+Every project gets its own special folder on the computer where the AI saves important files:
+- **DRAFT_USER_STORIES.md**: The simple list of what the project needs to do.
+- **ARCHITECTURE.md**: The technical blueprint for developers.
+- **Snapshot Logs**: A history of the decisions made during your chat session, saved by date.
+
+---
+*This file was generated to provide a layman-friendly overview of the AI Project Manager.*

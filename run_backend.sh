@@ -18,13 +18,13 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 echo "🚀 Booting Orchestrator Node (Port 8000)..."
-(cd orchestrator && source venv/bin/activate && uvicorn app.main:app --port 8000 --reload) &
+(cd services/orchestrator && source venv/bin/activate && uvicorn app.main:app --port 8000 --reload) &
 
 echo "🚀 Booting Chatbot Node (Port 8001)..."
-(cd chatbot_v2/backend && source venv/bin/activate && uvicorn app.main:app --port 8001 --reload) &
+(cd services/chatbot && source venv/bin/activate && PROJECT_BASE_DIR="../../workspace" uvicorn app.main:app --port 8001 --reload) &
 
 echo "🚀 Booting Developer Node (Port 8002)..."
-(cd developer_node/backend && source venv/bin/activate && uvicorn app.main:app --port 8002 --reload) &
+(cd services/developer && source venv/bin/activate && PROJECT_BASE_DIR="../../workspace" uvicorn app.main:app --port 8002 --reload) &
 
 echo -e "\n🟢 Backend Cluster is online! Press Ctrl+C to terminate."
 echo "--------------------------------------------------------"
