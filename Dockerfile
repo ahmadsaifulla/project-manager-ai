@@ -17,7 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the entire backend source code and workspace
 COPY services/ ./services/
-COPY workspace/ ./workspace/
+# Create the workspace directory for the persistent volume mount
+RUN mkdir -p /app/workspace
 
 # Copy the start script and make it executable
 COPY start.sh .
