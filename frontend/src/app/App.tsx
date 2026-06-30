@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from "react";
+import { ENABLE_TASK_BOARD } from "../config/features";
+import TaskBoard from "./components/TaskBoard";
 import {
   Send,
   Sparkles,
@@ -907,22 +909,27 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
           {[
             { key: "chat" as ActiveTab, label: "Chat", icon: <MessageSquare size={12} /> },
             { key: "board" as ActiveTab, label: "Task Board", icon: <Kanban size={12} /> },
-          ].map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === tab.key ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                } ${tab.key === "board" && phase !== "approved" ? "opacity-50" : ""}`}
-            >
-              {tab.icon}
-              {tab.label}
-              {tab.key === "board" && phase !== "approved" && (
-                <span className="text-[10px] bg-muted-foreground/20 text-muted-foreground px-1.5 py-0.5 rounded-full ml-0.5">
-                  soon
-                </span>
-              )}
-            </button>
-          ))}
+          ].map((tab) => {
+            const isBoardLocked = tab.key === "board" && (!ENABLE_TASK_BOARD || phase !== "approved");
+            return (
+              <button
+                key={tab.key}
+                onClick={() => {
+                  if (!isBoardLocked) setActiveTab(tab.key);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === tab.key ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  } ${isBoardLocked ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                {tab.icon}
+                {tab.label}
+                {isBoardLocked && (
+                  <span className="text-[10px] bg-muted-foreground/20 text-muted-foreground px-1.5 py-0.5 rounded-full ml-0.5">
+                    soon
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
         <div className="flex items-center gap-2">
@@ -1022,8 +1029,12 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
         )}
 
         {activeTab === "board" && (
-          <div className="flex-1 bg-background overflow-hidden">
-            <KanbanBoardView project={project} tasks={projectState?.tasks || []} />
+          <div className="flex-1 bg-background overflow-hidden p-6 flex justify-center">
+            {ENABLE_TASK_BOARD ? (
+              <div className="w-full max-w-4xl"><TaskBoard /></div>
+            ) : (
+              <KanbanBoardView project={project} tasks={projectState?.tasks || []} />
+            )}
           </div>
         )}
       </div>
