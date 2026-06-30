@@ -50,3 +50,6 @@ uvicorn==0.49.0
 websockets==15.0.1
 xxhash==3.8.0
 zstandard==0.25.0
+psycopg[binary]
+psycopg_pool
+langgraph-checkpoint-postgres
