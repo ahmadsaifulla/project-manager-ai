@@ -4,7 +4,10 @@ Implements all route contracts defined in ARCHITECTURE.md.
 """
 import os
 import re
+import logging
 from contextlib import asynccontextmanager
+
+logger = logging.getLogger(__name__)
 from datetime import datetime, UTC
 from typing import List, Dict, Any
 
@@ -68,7 +71,7 @@ Please generate the timeline of design decisions."""
         response = invoke_llm(model, prompt)
         return response.content
     except Exception as e:
-        print(f"[Snapshot] Error compiling timeline: {e}")
+        logger.error(f"[Snapshot] Error compiling timeline: {e}")
         return "1. **Requirements finalized**: The user approved the project requirements."
 
 
@@ -426,7 +429,7 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
     try:
         background_tasks.add_task(execute_state_finalization, project_id, updated_state_snap)
     except Exception as e:
-        print(f"[Finalization] Error: {e}")
+        logger.error(f"[Finalization] Error: {e}")
 
     return format_graph_state(updated_state_snap, project_id)
 

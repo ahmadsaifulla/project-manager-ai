@@ -11,7 +11,10 @@ for the AI Project Manager. It contains:
 """
 import os
 import time
+import logging
 from typing import List, Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage, HumanMessage
@@ -273,7 +276,7 @@ Return a list of filenames that are affected."""
         result = invoke_llm(structured_model, prompt.format(user_request=user_request))
         return result.affected_layers
     except Exception as e:
-        print(f"[BlastRadius] Error: {e}. Defaulting to all layers.")
+        logger.error(f"[BlastRadius] Error: {e}. Defaulting to all layers.")
         return ["DB_LAYER.md", "API_LAYER.md", "SERVICES_LAYER.md", "FRONTEND_LAYER.md"]
 
 
@@ -486,7 +489,7 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
 
     # Post-processing: validate DAG integrity
     if not validate_no_cycles(tasks):
-        print("[PlanTasks] WARNING: Circular dependency detected. Clearing all dependencies.")
+        logger.warning("[PlanTasks] WARNING: Circular dependency detected. Clearing all dependencies.")
         for t in tasks:
             t.dependencies = []
 
