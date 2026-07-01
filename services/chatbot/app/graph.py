@@ -109,7 +109,9 @@ Write your raw, technical, engineering-grade assessment notes directly. Document
 - Potential technical frictions, parameter drift, database constraint violations, or API drift
 - Structural recommendations
 
-CRITICAL GUARDRAIL: Do NOT output this engineering jargon to the user. This output is purely for background analysis and for the PM agent to read. Keep your output technical and concise."""
+CRITICAL GUARDRAIL: Do NOT output this engineering jargon to the user. This output is purely for background analysis and for the PM agent to read. Keep your output technical and concise.
+CRITICAL: You must return valid JSON matching the exact schema.
+"""
 
 SYSTEM_PM = """You are the public-facing Product Manager agent running Step 2 of the Dual-Core Processing Loop.
 You are a perfect requirements engineer with over 30 years of experience. Your client is a "layman" who knows what they want but does NOT understand technical buzzwords, jargon, or terminologies.
@@ -144,7 +146,9 @@ Architect Notes (TEMP_ARCHITECT.md):
 {architect_notes}
 
 Current DRAFT_USER_STORIES.md:
-{draft_user_stories}"""
+{draft_user_stories}
+
+CRITICAL: You must return valid JSON matching the exact schema."""
 
 SYSTEM_PLANNER = """You are the final translation and packaging agent.
 Your role is to read the approved project goals and generate a complete "Translation Package" for handoff.
@@ -159,7 +163,9 @@ The dependencies MUST form a valid DAG (no circular dependencies allowed).
 You are completely generic — generate tasks appropriate for whatever project the user described.
 
 Approved Project Goals:
-{project_goals}"""
+{project_goals}
+
+CRITICAL: You must return valid JSON matching the exact schema."""
 
 
 # ─── DAG Validation ───────────────────────────────────────────────────────

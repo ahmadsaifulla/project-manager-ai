@@ -15,7 +15,10 @@ from langgraph.graph import add_messages
 class TaskStatus(str, Enum):
     TODO = "todo"
     IN_PROGRESS = "in_progress"
+    IN_QC = "in_qc"
+    IN_QA = "in_qa"
     DONE = "done"
+    REJECTED = "rejected"
 
 
 class TaskPriority(str, Enum):
@@ -49,6 +52,7 @@ class Task(BaseModel):
     priority: TaskPriority = Field(default=TaskPriority.MEDIUM)
     estimated_effort: str = Field(description="Estimated effort (e.g. '3 hours', 'Medium')")
     dependencies: List[str] = Field(default_factory=list, description="IDs of tasks that must complete first")
+    evaluation_feedback: Optional[str] = Field(default=None, description="Feedback from QC/QA")
 
 
 # ─── LLM Structured Output Schemas ─────────────────────────────────────────
@@ -56,6 +60,7 @@ class Task(BaseModel):
 class BlastRadiusOutput(BaseModel):
     """Determines which architecture layers are affected by a user request."""
     affected_layers: List[str] = Field(
+        default_factory=list,
         description="List of affected layer filenames from: 'DB_LAYER.md', 'API_LAYER.md', 'SERVICES_LAYER.md', 'FRONTEND_LAYER.md'. Return empty list if the request is general or doesn't target any specific architectural component."
     )
 
@@ -63,34 +68,38 @@ class BlastRadiusOutput(BaseModel):
 class PMOutput(BaseModel):
     """Structured output from the Product Manager agent."""
     detected_gaps: List[str] = Field(
+        default_factory=list,
         description="Remaining gaps across: Core Intent, Data Scope, User Journey, Constraints. Empty if all gaps are fully resolved or in listening phase."
     )
     next_question: str = Field(
+        default="",
         description="Layman-friendly response to the user. MUST NOT repeat previous greetings. Acknowledge their latest input, provide insights, and ask exactly ONE relevant follow-up question to move the project forward. Do not say 'Welcome' if you have already said it."
     )
     project_goals: str = Field(
+        default="None",
         description="Compiled goals summary formatted strictly under exactly three headers: '### What We Have Done / Finalized', '### What Needs to Be Done / Next Steps', and '### What to Update'. Use the value 'None' if a heading has no content."
     )
     updated_draft_user_stories: str = Field(
+        default="",
         description="Complete, updated text of DRAFT_USER_STORIES.md, appending newly confirmed requirements systematically."
     )
 
 
 class TaskModel(BaseModel):
     """Individual task output from the task planner LLM."""
-    id: str = Field(description="Unique task ID, e.g. TSK-001")
-    title: str = Field(description="Brief title of the task")
-    description: str = Field(description="Detailed scope of the work")
-    priority: str = Field(description="low, medium, high, or critical")
-    estimated_effort: str = Field(description="Estimated effort, e.g. '6 hours', '3 days'")
-    dependencies: List[str] = Field(description="List of task IDs this task depends on. Must form an acyclic graph.")
+    id: str = Field(default="TSK-UNKNOWN", description="Unique task ID, e.g. TSK-001")
+    title: str = Field(default="Untitled Task", description="Brief title of the task")
+    description: str = Field(default="", description="Detailed scope of the work")
+    priority: str = Field(default="medium", description="low, medium, high, or critical")
+    estimated_effort: str = Field(default="TBD", description="Estimated effort, e.g. '6 hours', '3 days'")
+    dependencies: List[str] = Field(default_factory=list, description="List of task IDs this task depends on. Must form an acyclic graph.")
 
 
 class PlanTasksOutput(BaseModel):
     """Structured output from the task planner agent."""
-    prd: str = Field(description="The formalized Product Requirements Document in markdown format.")
-    technical_spec: str = Field(description="The formal Technical Specification document in markdown format.")
-    tasks: List[TaskModel] = Field(description="Structured developer tasks mapping to the approved requirements summary.")
+    prd: str = Field(default="", description="The formalized Product Requirements Document in markdown format.")
+    technical_spec: str = Field(default="", description="The formal Technical Specification document in markdown format.")
+    tasks: List[TaskModel] = Field(default_factory=list, description="Structured developer tasks mapping to the approved requirements summary.")
 
 
 # ─── LangGraph State Definition ────────────────────────────────────────────
