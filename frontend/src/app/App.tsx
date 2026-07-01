@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect } from "react";
-import { fetchProjects, createProject, Project, ProjectState, Message, KanbanTask } from "../api";
 import { ENABLE_TASK_BOARD } from "../config/features";
 import TaskBoard from "./components/TaskBoard";
 import {
@@ -27,11 +26,270 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Phase = "listening" | "processing" | "reviewing" | "goals_approved";
+type Phase = "listening" | "processing" | "reviewing" | "approved";
 type ActiveTab = "chat" | "board";
 type AppView = "dashboard" | "project";
 
+interface Message {
+  id: string;
+  role: "user" | "ai";
+  content: string;
+  timestamp: Date;
+}
 
+interface KanbanTask {
+  id: string;
+  title: string;
+  description: string;
+  assignee?: string;
+  priority: "high" | "medium" | "low" | "critical";
+  status: "todo" | "in_progress" | "done";
+  estimated_effort?: string;
+}
+
+interface KanbanBoard {
+  todo: KanbanTask[];
+  inprogress: KanbanTask[];
+  done: KanbanTask[];
+}
+
+interface Project {
+  id: string;
+  name: string;
+  description: string;
+  status: "listening" | "reviewing" | "approved" | "in-progress";
+  statusLabel: string;
+  sprint: string;
+  team: { initials: string; color: string }[];
+  progress: number;
+  dueDate: string;
+  tags: string[];
+  accentColor: string;
+  board: KanbanBoard;
+}
+
+// ─── Seed data ────────────────────────────────────────────────────────────────
+
+const PROJECTS: Project[] = [
+  {
+    id: "analytics-portal",
+    name: "Analytics Portal",
+    description:
+      "Customer-facing usage analytics with Okta SSO, real-time Kafka-driven alerts, and CSV/PDF export.",
+    status: "approved",
+    statusLabel: "Approved",
+    sprint: "Sprint 2 / 3",
+    team: [
+      { initials: "SR", color: "#5B4EFF" },
+      { initials: "MK", color: "#0EA5E9" },
+      { initials: "JP", color: "#10B981" },
+    ],
+    progress: 58,
+    dueDate: "Aug 14, 2026",
+    tags: ["SaaS", "Data"],
+    accentColor: "#5B4EFF",
+    board: {
+      todo: [
+        { id: "t1", title: "Define API schema for usage metrics", description: "OpenAPI spec covering all drill-down endpoints", assigneeInitials: "JP", assigneeColor: "#10B981", priority: "high", tag: "Backend" },
+        { id: "t2", title: "Set up Okta sandbox environment", description: "Dev tenant config + SAML metadata exchange", assigneeInitials: "MK", assigneeColor: "#0EA5E9", priority: "medium", tag: "Auth" },
+        { id: "t3", title: "CSV export service", description: "Streaming export for large datasets", assigneeInitials: "SR", assigneeColor: "#5B4EFF", priority: "medium", tag: "Backend" },
+      ],
+      inprogress: [
+        { id: "t4", title: "Alert engine — threshold evaluation", description: "Event-driven trigger with <5 min SLA", assigneeInitials: "SR", assigneeColor: "#5B4EFF", priority: "high", tag: "Core" },
+        { id: "t5", title: "Postgres query layer + row-level security", description: "Multi-tenant isolation via RLS policies", assigneeInitials: "JP", assigneeColor: "#10B981", priority: "high", tag: "Database" },
+      ],
+      done: [
+        { id: "t6", title: "Stakeholder requirements sign-off", description: "All three business units confirmed scope", assigneeInitials: "MK", assigneeColor: "#0EA5E9", priority: "low", tag: "Planning" },
+        { id: "t7", title: "Architecture decision record", description: "Event-driven chosen over polling — rationale documented", assigneeInitials: "SR", assigneeColor: "#5B4EFF", priority: "medium", tag: "Docs" },
+      ],
+    },
+  },
+  {
+    id: "mobile-redesign",
+    name: "Mobile App Redesign",
+    description:
+      "Full UX overhaul of the iOS and Android apps targeting a 40% reduction in support tickets.",
+    status: "reviewing",
+    statusLabel: "Under Review",
+    sprint: "Sprint 1 / 4",
+    team: [
+      { initials: "AL", color: "#F59E0B" },
+      { initials: "TS", color: "#EF4444" },
+    ],
+    progress: 22,
+    dueDate: "Oct 3, 2026",
+    tags: ["Mobile", "UX"],
+    accentColor: "#F59E0B",
+    board: {
+      todo: [
+        { id: "m1", title: "User interview synthesis", description: "Condense 24 interviews into theme clusters", assigneeInitials: "AL", assigneeColor: "#F59E0B", priority: "high", tag: "Research" },
+        { id: "m2", title: "Navigation structure redesign", description: "Flatten the 4-level tab hierarchy", assigneeInitials: "TS", assigneeColor: "#EF4444", priority: "high", tag: "UX" },
+        { id: "m3", title: "Onboarding flow v2 prototype", description: "3-screen reduced onboarding", assigneeInitials: "AL", assigneeColor: "#F59E0B", priority: "medium", tag: "UX" },
+      ],
+      inprogress: [
+        { id: "m4", title: "Component library audit", description: "Map existing components against new design system", assigneeInitials: "TS", assigneeColor: "#EF4444", priority: "medium", tag: "Design System" },
+      ],
+      done: [
+        { id: "m5", title: "Competitive analysis report", description: "Benchmarked 6 direct competitors on 14 UX dimensions", assigneeInitials: "AL", assigneeColor: "#F59E0B", priority: "low", tag: "Research" },
+      ],
+    },
+  },
+  {
+    id: "payment-gateway",
+    name: "Payment Gateway Integration",
+    description:
+      "Replace legacy Braintree setup with Stripe Connect for marketplace payouts and subscription billing.",
+    status: "approved",
+    statusLabel: "Approved",
+    sprint: "Sprint 3 / 3",
+    team: [
+      { initials: "DW", color: "#8B5CF6" },
+      { initials: "CF", color: "#06B6D4" },
+      { initials: "RN", color: "#10B981" },
+    ],
+    progress: 84,
+    dueDate: "Jul 18, 2026",
+    tags: ["Payments", "Backend"],
+    accentColor: "#8B5CF6",
+    board: {
+      todo: [
+        { id: "p1", title: "PCI DSS compliance checklist", description: "Final SAQ-A review before go-live", assigneeInitials: "CF", assigneeColor: "#06B6D4", priority: "high", tag: "Compliance" },
+      ],
+      inprogress: [
+        { id: "p2", title: "Stripe Connect webhook handler", description: "account.updated + payout.paid events", assigneeInitials: "DW", assigneeColor: "#8B5CF6", priority: "high", tag: "Backend" },
+        { id: "p3", title: "Subscription billing migration script", description: "Move 3,400 active subs from Braintree", assigneeInitials: "RN", assigneeColor: "#10B981", priority: "high", tag: "Migration" },
+      ],
+      done: [
+        { id: "p4", title: "Stripe SDK integration", description: "Payment intent flow + 3DS2 handling", assigneeInitials: "DW", assigneeColor: "#8B5CF6", priority: "high", tag: "Backend" },
+        { id: "p5", title: "Marketplace payout routing", description: "Split payments with configurable fee retention", assigneeInitials: "RN", assigneeColor: "#10B981", priority: "medium", tag: "Core" },
+        { id: "p6", title: "Staging environment smoke tests", description: "All 47 test cases passing on test clocks", assigneeInitials: "CF", assigneeColor: "#06B6D4", priority: "medium", tag: "QA" },
+      ],
+    },
+  },
+  {
+    id: "hr-portal",
+    name: "Internal HR Portal",
+    description:
+      "Self-service HR hub for leave requests, org chart, payslips, and onboarding task tracking.",
+    status: "listening",
+    statusLabel: "Requirements",
+    sprint: "Pre-sprint",
+    team: [
+      { initials: "NB", color: "#EC4899" },
+    ],
+    progress: 8,
+    dueDate: "Nov 28, 2026",
+    tags: ["Internal", "HR"],
+    accentColor: "#EC4899",
+    board: {
+      todo: [
+        { id: "h1", title: "Gather HR admin requirements", description: "Interview 4 HR stakeholders", assigneeInitials: "NB", assigneeColor: "#EC4899", priority: "high", tag: "Discovery" },
+      ],
+      inprogress: [],
+      done: [],
+    },
+  },
+  {
+    id: "ai-chatbot",
+    name: "AI Support Chatbot",
+    description:
+      "LLM-powered tier-1 support bot with RAG over the knowledge base, handoff to human agents.",
+    status: "approved",
+    statusLabel: "Approved",
+    sprint: "Sprint 1 / 2",
+    team: [
+      { initials: "LH", color: "#5B4EFF" },
+      { initials: "PV", color: "#F59E0B" },
+    ],
+    progress: 41,
+    dueDate: "Sep 5, 2026",
+    tags: ["AI", "Support"],
+    accentColor: "#5B4EFF",
+    board: {
+      todo: [
+        { id: "a1", title: "Knowledge base chunking strategy", description: "Evaluate fixed vs semantic chunking on support docs", assigneeInitials: "PV", assigneeColor: "#F59E0B", priority: "high", tag: "RAG" },
+        { id: "a2", title: "Human handoff escalation rules", description: "Define confidence threshold triggers", assigneeInitials: "LH", assigneeColor: "#5B4EFF", priority: "medium", tag: "Logic" },
+      ],
+      inprogress: [
+        { id: "a3", title: "Vector store setup (pgvector)", description: "Embedding pipeline for 12k KB articles", assigneeInitials: "PV", assigneeColor: "#F59E0B", priority: "high", tag: "Infrastructure" },
+        { id: "a4", title: "Chat widget front-end", description: "Embeddable React widget with streaming response", assigneeInitials: "LH", assigneeColor: "#5B4EFF", priority: "medium", tag: "Frontend" },
+      ],
+      done: [
+        { id: "a5", title: "LLM provider evaluation", description: "Claude 3.5 Sonnet selected over GPT-4o for latency/cost", assigneeInitials: "LH", assigneeColor: "#5B4EFF", priority: "medium", tag: "Research" },
+      ],
+    },
+  },
+  {
+    id: "data-warehouse",
+    name: "Data Warehouse Migration",
+    description:
+      "Migrate 8TB from on-prem Redshift to Snowflake with zero-downtime cutover and dbt model rewrite.",
+    status: "reviewing",
+    statusLabel: "Under Review",
+    sprint: "Sprint 2 / 5",
+    team: [
+      { initials: "KL", color: "#06B6D4" },
+      { initials: "YM", color: "#10B981" },
+      { initials: "BT", color: "#8B5CF6" },
+    ],
+    progress: 33,
+    dueDate: "Dec 12, 2026",
+    tags: ["Data", "Infrastructure"],
+    accentColor: "#06B6D4",
+    board: {
+      todo: [
+        { id: "dw1", title: "dbt model rewrite — mart layer", description: "Rewrite 34 mart models for Snowflake SQL dialect", assigneeInitials: "YM", assigneeColor: "#10B981", priority: "high", tag: "dbt" },
+        { id: "dw2", title: "Cutover runbook", description: "Step-by-step zero-downtime migration plan", assigneeInitials: "KL", assigneeColor: "#06B6D4", priority: "high", tag: "Ops" },
+      ],
+      inprogress: [
+        { id: "dw3", title: "Snowflake account + warehouse sizing", description: "Right-size compute for 3 tiers of workload", assigneeInitials: "BT", assigneeColor: "#8B5CF6", priority: "medium", tag: "Infrastructure" },
+        { id: "dw4", title: "Historical data backfill validation", description: "Row-count and checksum comparison for 6-month window", assigneeInitials: "KL", assigneeColor: "#06B6D4", priority: "high", tag: "Validation" },
+      ],
+      done: [
+        { id: "dw5", title: "Redshift schema export", description: "All 147 tables exported and mapped to Snowflake types", assigneeInitials: "YM", assigneeColor: "#10B981", priority: "medium", tag: "Migration" },
+        { id: "dw6", title: "Snowflake POC cost model", description: "Projected 31% cost reduction vs. Redshift RA3", assigneeInitials: "BT", assigneeColor: "#8B5CF6", priority: "low", tag: "Planning" },
+      ],
+    },
+  },
+];
+
+const INITIAL_MESSAGES: Message[] = [
+  {
+    id: "1",
+    role: "ai",
+    content:
+      "Hi, I'm your AI Project Coordinator. Describe your project and I'll help you map requirements, identify risks, and structure a delivery plan. What are you building?",
+    timestamp: new Date(Date.now() - 9 * 60000),
+  },
+  {
+    id: "2",
+    role: "user",
+    content:
+      "We need a customer-facing analytics portal for our SaaS product. It should let clients drill into their usage data, export reports, and set up email alerts when thresholds are crossed.",
+    timestamp: new Date(Date.now() - 7 * 60000),
+  },
+  {
+    id: "3",
+    role: "ai",
+    content:
+      "Understood. A few clarifying questions: (1) Will clients authenticate via your existing SSO or a separate login? (2) What data sources feed into the usage metrics — your own event pipeline, or a third-party like Segment? (3) Do alerts need to be real-time or is daily digest sufficient to start?",
+    timestamp: new Date(Date.now() - 6 * 60000),
+  },
+  {
+    id: "4",
+    role: "user",
+    content:
+      "SSO via Okta. Data comes from our internal Kafka pipeline already processed into Postgres. Alerts should fire within 5 minutes of a threshold being crossed — real-time matters here.",
+    timestamp: new Date(Date.now() - 4 * 60000),
+  },
+  {
+    id: "5",
+    role: "ai",
+    content:
+      "Good — that shapes the architecture considerably. The <5-minute alert requirement means we'll need a background polling or event-driven trigger rather than a batch job. I'm mapping out the requirement set now. Anything else before I run a full analysis?",
+    timestamp: new Date(Date.now() - 2 * 60000),
+  },
+];
 
 
 
@@ -570,7 +828,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
 
   const phase = projectState?.elicitation_phase as Phase || "listening";
   const messages = projectState?.messages || [];
-  const sidePanelVisible = phase === "reviewing" || phase === "goals_approved";
+  const sidePanelVisible = phase === "reviewing" || phase === "approved";
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
 
   useEffect(() => {
@@ -614,36 +872,21 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
   }
 
   async function handleApprove() {
-    setIsThinking(true);
-    try {
-      await import("../api").then(api => api.triggerAction(project.id, "approve-goals"));
-      await fetchState();
-    } finally {
-      setIsThinking(false);
-    }
+    await import("../api").then(api => api.triggerAction(project.id, "approve-goals"));
+    await fetchState();
   }
 
   async function handleModify() {
-    setIsThinking(true);
-    try {
-      await import("../api").then(api => api.triggerAction(project.id, "reject-goals"));
-      await fetchState();
-    } finally {
-      setIsThinking(false);
-    }
+    await import("../api").then(api => api.triggerAction(project.id, "reject-goals"));
+    await fetchState();
   }
 
   async function handleAddMore() {
-    setIsThinking(true);
-    try {
-      await import("../api").then(api => api.triggerAction(project.id, "unlock-requirements"));
-      await fetchState();
-    } finally {
-      setIsThinking(false);
-    }
+    await import("../api").then(api => api.triggerAction(project.id, "unlock-requirements"));
+    await fetchState();
   }
 
-  const inputLocked = phase === "goals_approved";
+  const inputLocked = phase === "approved";
   const inputProcessing = phase === "processing" || phase === "reviewing";
 
   return (
@@ -667,7 +910,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
             { key: "chat" as ActiveTab, label: "Chat", icon: <MessageSquare size={12} /> },
             { key: "board" as ActiveTab, label: "Task Board", icon: <Kanban size={12} /> },
           ].map((tab) => {
-            const isBoardLocked = tab.key === "board" && (phase !== "goals_approved");
+            const isBoardLocked = tab.key === "board" && (!ENABLE_TASK_BOARD || phase !== "approved");
             return (
               <button
                 key={tab.key}
@@ -679,6 +922,11 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
               >
                 {tab.icon}
                 {tab.label}
+                {isBoardLocked && (
+                  <span className="text-[10px] bg-muted-foreground/20 text-muted-foreground px-1.5 py-0.5 rounded-full ml-0.5">
+                    soon
+                  </span>
+                )}
               </button>
             );
           })}
@@ -688,7 +936,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
           {phase === "listening" && <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />Listening</div>}
           {phase === "processing" && <div className="flex items-center gap-1.5 text-xs text-amber-600"><Loader2 size={12} className="animate-spin" />Analyzing</div>}
           {phase === "reviewing" && <div className="flex items-center gap-1.5 text-xs text-amber-600"><span className="w-1.5 h-1.5 rounded-full bg-amber-400" />Under Review</div>}
-          {phase === "goals_approved" && <div className="flex items-center gap-1.5 text-xs text-green-600"><CheckCircle2 size={12} />Approved</div>}
+          {phase === "approved" && <div className="flex items-center gap-1.5 text-xs text-green-600"><CheckCircle2 size={12} />Approved</div>}
         </div>
       </header>
 
@@ -774,15 +1022,19 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
               }}
             >
               {(phase === "processing" || phase === "listening") && sidePanelVisible && <IdlePanel />}
-              {phase === "reviewing" && <ReviewPanel projectState={projectState as ProjectState} onApprove={handleApprove} onModify={handleModify} />}
-              {phase === "goals_approved" && <ApprovedPanel projectState={projectState as ProjectState} onAddMore={handleAddMore} />}
+              {phase === "reviewing" && <ReviewPanel onApprove={handleApprove} onModify={handleModify} />}
+              {phase === "approved" && <ApprovedPanel onAddMore={handleAddMore} />}
             </div>
           </>
         )}
 
         {activeTab === "board" && (
           <div className="flex-1 bg-background overflow-hidden p-6 flex justify-center">
-            <div className="w-full h-full"><TaskBoard project={project} /></div>
+            {ENABLE_TASK_BOARD ? (
+              <div className="w-full max-w-4xl"><TaskBoard /></div>
+            ) : (
+              <KanbanBoardView project={project} tasks={projectState?.tasks || []} />
+            )}
           </div>
         )}
       </div>
@@ -790,6 +1042,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
   );
 }
 
+import { fetchProjects, createProject } from "../api";
 
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
