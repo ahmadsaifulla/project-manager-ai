@@ -1,4 +1,3 @@
-/// <reference types="vite/client" />
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
 
 export interface Project {
@@ -18,12 +17,11 @@ export interface KanbanTask {
   id: string;
   title: string;
   description: string;
-  status: "todo" | "in_progress" | "in_qc" | "in_qa" | "done" | "rejected";
+  status: "todo" | "in_progress" | "done";
   priority: "low" | "medium" | "high" | "critical";
   assignee?: string;
   estimated_effort: string;
   dependencies: string[];
-  evaluation_feedback?: string;
 }
 
 export interface Message {
@@ -80,21 +78,5 @@ export const triggerAction = async (projectId: string, action: string): Promise<
     method: "POST",
   });
   if (!res.ok) throw new Error(`Failed to trigger action ${action}`);
-  return res.json();
-};
-
-export const fetchTasks = async (projectId: string): Promise<KanbanTask[]> => {
-  const res = await fetch(`${API_BASE}/projects/${projectId}/tasks`);
-  if (!res.ok) throw new Error("Failed to fetch tasks");
-  return res.json();
-};
-
-export const updateTask = async (projectId: string, taskId: string, payload: { status?: string; assignee?: string }): Promise<any> => {
-  const res = await fetch(`${API_BASE}/projects/${projectId}/tasks/${taskId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error("Failed to update task");
   return res.json();
 };
