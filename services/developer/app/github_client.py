@@ -15,33 +15,14 @@ if not GITHUB_PAT:
 
 def get_branch_diff(repo_name: str, branch_name: str) -> str:
     """
-    Connects to the specified GitHub repository and extracts the raw, text-based
-    git diff between the 'main' branch and the provided 'branch_name'.
+    MOCKED for Version 1 MVP: Connects to the specified GitHub repository and extracts the raw, text-based
+    git diff. Currently returns a hardcoded simulated diff for QC testing.
     """
-    if not GITHUB_PAT:
-        raise ValueError("GITHUB_PAT is not set in the environment.")
-        
-    # Initialize the PyGithub client
-    client = Github(GITHUB_PAT)
-    
-    try:
-        # Connect to the repository (expects "owner/repo" format)
-        repo = client.get_repo(repo_name)
-        
-        # Compare task branch against main
-        comparison = repo.compare("main", branch_name)
-        
-        # Extract raw patch text from the comparison
-        diff_lines = []
-        for file in comparison.files:
-            if file.patch:
-                diff_lines.append(f"--- a/{file.filename}\n+++ b/{file.filename}\n{file.patch}")
-            else:
-                diff_lines.append(f"--- a/{file.filename}\n+++ b/{file.filename}\n# (Binary file or diff too large)")
-                
-        return "\n\n".join(diff_lines)
-        
-    except GithubException as e:
-        raise RuntimeError(f"GitHub API Error [{e.status}]: {e.data.get('message', 'Unknown error')}")
-    except Exception as e:
-        raise RuntimeError(f"Unexpected error while fetching diff: {str(e)}")
+    return """--- a/services/orchestrator/app/main.py
++++ b/services/orchestrator/app/main.py
+@@ -39,6 +39,7 @@
+ @app.get("/api/config")
+ def get_config():
+     \"\"\"Returns the current global project state.\"\"\"
++    # QC Note: Added logging here
+     return project_state"""

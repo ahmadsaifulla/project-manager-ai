@@ -3,6 +3,23 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+from pydantic import BaseModel, Field
+from typing import List, Optional
+
+class ProjectCreateRequest(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    status: str = "listening"
+    sprint: Optional[str] = None
+    progress: int = 0
+    due_date: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    accent_color: str = "#5B4EFF"
+
+class TaskUpdateRequest(BaseModel):
+    status: Optional[str] = None
+    assignee: Optional[str] = None
 
 # Initialize the Master Orchestrator API Gateway
 app = FastAPI(title="Master Orchestrator API Gateway")
@@ -96,9 +113,9 @@ async def proxy_list_projects():
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
 @app.post("/api/projects")
-async def proxy_create_project(request: Request):
+async def proxy_create_project(project: ProjectCreateRequest):
     """Proxy to create a new project."""
-    payload = await request.json()
+    payload = project.model_dump(exclude_unset=True)
     target_url = f"{project_state['chatbot_node_url']}/api/projects"
     try:
         async with httpx.AsyncClient() as client:
@@ -137,6 +154,29 @@ async def proxy_project_action(project_id: str, action: str):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(target_url, timeout=60.0)
+            return JSONResponse(status_code=response.status_code, content=response.json())
+    except httpx.RequestError as e:
+        return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
+
+@app.get("/api/projects/{project_id}/tasks")
+async def proxy_get_tasks(project_id: str):
+    """Proxy fetching project tasks."""
+    target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/tasks"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(target_url, timeout=30.0)
+            return JSONResponse(status_code=response.status_code, content=response.json())
+    except httpx.RequestError as e:
+        return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
+
+@app.patch("/api/projects/{project_id}/tasks/{task_id}")
+async def proxy_update_task(project_id: str, task_id: str, update: TaskUpdateRequest):
+    """Proxy task updates."""
+    payload = update.model_dump(exclude_unset=True)
+    target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/tasks/{task_id}"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(target_url, json=payload, timeout=30.0)
             return JSONResponse(status_code=response.status_code, content=response.json())
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
