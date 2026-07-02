@@ -104,6 +104,7 @@ class TaskDb(Base):
     )
     priority = Column(SqlEnum(TaskPriority), default=TaskPriority.MEDIUM)
     estimated_effort = Column(String(100), nullable=False)
+    evaluation_feedback = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.now(UTC))
     updated_at = Column(DateTime, default=datetime.now(UTC), onupdate=datetime.now(UTC))
 

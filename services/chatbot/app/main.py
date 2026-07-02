@@ -24,6 +24,10 @@ from .schemas import Task, TaskStatus, TaskPriority, Project
 from .graph import workflow, ProjectState, get_llm_model, invoke_llm, get_workspace_dir
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+import httpx
+from pydantic import BaseModel
+import httpx
+from pydantic import BaseModel
 
 app_graph = None
 
@@ -382,6 +386,10 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
         },
         as_node="elicit_goals",
     )
+    
+    # Resume graph execution to trigger the `plan_tasks` node
+    await app_graph.ainvoke(None, config)
+
     updated_state_snap = (await app_graph.aget_state(config)).values
 
     # Persist generated tasks to SQL database
@@ -496,6 +504,62 @@ async def unlock_requirements(project_id: str, db: Session = Depends(get_db)):
     return format_graph_state(updated_state_snap, project_id)
 
 
+class TaskUpdateRequest(BaseModel):
+    status: str | None = None
+    assignee: str | None = None
+
+async def trigger_qc_node(task_id: str, repo_name: str, branch_name: str):
+    try:
+        target_url = "http://127.0.0.1:8000/api/qc/evaluate"
+        payload = {
+            "task_id": task_id,
+            "repo_name": repo_name,
+            "branch_name": branch_name
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(target_url, json=payload, timeout=60.0)
+            if response.status_code == 200:
+                result = response.json()
+                verdict = result.get("verdict")
+                feedback = result.get("feedback")
+                
+                db = next(get_db())
+                db_task = db.query(TaskDb).filter(TaskDb.id == task_id).first()
+                if db_task:
+                    if verdict:
+                        db_task.status = TaskStatus.IN_QA
+                    else:
+                        db_task.status = TaskStatus.REJECTED
+                    db_task.evaluation_feedback = feedback
+                    db.commit()
+                db.close()
+    except Exception as e:
+        logger.error(f"Failed to trigger QC node: {e}")
+
+
+@app.patch("/api/projects/{project_id}/tasks/{task_id}")
+async def update_project_task(project_id: str, task_id: str, payload: TaskUpdateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    task = db.query(TaskDb).filter(TaskDb.id == task_id, TaskDb.project_id == project_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    if payload.status:
+        try:
+            task.status = TaskStatus(payload.status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid status")
+    if payload.assignee is not None:
+        task.assignee = payload.assignee
+        
+    db.commit()
+    db.refresh(task)
+    
+    if task.status == TaskStatus.IN_QC:
+        background_tasks.add_task(trigger_qc_node, task.id, "mock-repo", "mock-branch")
+        
+    return {"status": "success", "task": {"id": task.id, "status": task.status.value, "evaluation_feedback": task.evaluation_feedback}}
+
+
 @app.get("/api/projects/{project_id}/tasks")
 async def get_project_tasks(project_id: str, db: Session = Depends(get_db)):
     """Fetch persisted tasks for a project from the database."""
@@ -512,6 +576,7 @@ async def get_project_tasks(project_id: str, db: Session = Depends(get_db)):
                 "priority": t.priority.value,
                 "estimated_effort": t.estimated_effort,
                 "dependencies": [dep.id for dep in t.dependencies],
+                "evaluation_feedback": t.evaluation_feedback,
             }
         )
     return results

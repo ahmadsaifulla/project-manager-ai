@@ -53,4 +53,4 @@ zstandard==0.25.0
 psycopg[binary]
 psycopg_pool
 langgraph-checkpoint-postgres
-psycopg2-binary
+psycopg2-binarylangchain-openai
