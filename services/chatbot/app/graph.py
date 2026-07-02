@@ -64,7 +64,7 @@ def get_llm_model():
         )
 
     return ChatGroq(
-        model="qwen/qwen3.6-27b",
+        model="llama-3.1-8b-instant",
         temperature=0.1,
         max_retries=2,
     )
@@ -165,7 +165,9 @@ You are completely generic — generate tasks appropriate for whatever project t
 Approved Project Goals:
 {project_goals}
 
-CRITICAL: You must return valid JSON matching the exact schema."""
+CRITICAL: You must return valid JSON matching the exact schema.
+DO NOT stringify the `tasks` array. It must be a native JSON array of objects.
+Ensure the output matches the required Pydantic model perfectly."""
 
 
 # ─── DAG Validation ───────────────────────────────────────────────────────
