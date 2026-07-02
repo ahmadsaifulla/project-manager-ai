@@ -111,6 +111,8 @@ Write your raw, technical, engineering-grade assessment notes directly. Document
 
 CRITICAL GUARDRAIL: Do NOT output this engineering jargon to the user. This output is purely for background analysis and for the PM agent to read. Keep your output technical and concise.
 CRITICAL: You must return valid JSON matching the exact schema.
+DO NOT stringify any arrays (e.g. affected_layers). Return native JSON arrays of strings.
+Ensure the output matches the required Pydantic model perfectly.
 """
 
 SYSTEM_PM = """You are the public-facing Product Manager agent running Step 2 of the Dual-Core Processing Loop.
@@ -148,7 +150,9 @@ Architect Notes (TEMP_ARCHITECT.md):
 Current DRAFT_USER_STORIES.md:
 {draft_user_stories}
 
-CRITICAL: You must return valid JSON matching the exact schema."""
+CRITICAL: You must return valid JSON matching the exact schema.
+DO NOT stringify arrays (e.g. detected_gaps). Return a native JSON array of strings.
+Ensure the output matches the required Pydantic model perfectly."""
 
 SYSTEM_PLANNER = """You are the final translation and packaging agent.
 Your role is to read the approved project goals and generate a complete "Translation Package" for handoff.
@@ -276,7 +280,8 @@ If the request is a general greeting, welcome, or doesn't target any specific ar
 
 User Request: {user_request}
 
-Return a list of filenames that are affected."""
+CRITICAL: You must return valid JSON matching the exact schema.
+DO NOT stringify the `affected_layers` array. Return a native JSON array of strings."""
 
     try:
         model = get_llm_model()
