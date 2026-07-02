@@ -544,6 +544,58 @@ function ApprovedPanel({ projectState, onAddMore }: { projectState: ProjectState
   );
 }
 
+// ─── Toast Notification ───────────────────────────────────────────────────────
+
+function Toast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  useEffect(() => {
+    const timer = setTimeout(onDismiss, 5000);
+    return () => clearTimeout(timer);
+  }, [onDismiss]);
+
+  return (
+    <div style={{
+      position: "fixed",
+      bottom: "24px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      zIndex: 9999,
+      background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)",
+      border: "1px solid rgba(255, 80, 80, 0.4)",
+      borderRadius: "12px",
+      padding: "14px 24px",
+      color: "#ff6b6b",
+      fontSize: "13px",
+      fontWeight: 500,
+      boxShadow: "0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,80,80,0.1)",
+      backdropFilter: "blur(12px)",
+      display: "flex",
+      alignItems: "center",
+      gap: "10px",
+      maxWidth: "480px",
+      animation: "toast-in 0.3s ease-out",
+    }}>
+      <AlertCircle size={16} style={{ flexShrink: 0 }} />
+      <span>{message}</span>
+      <button
+        onClick={onDismiss}
+        style={{
+          marginLeft: "8px",
+          background: "none",
+          border: "none",
+          color: "#ff6b6b",
+          cursor: "pointer",
+          fontSize: "16px",
+          lineHeight: 1,
+          padding: "0 2px",
+          opacity: 0.7,
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 // ─── Project Workspace ────────────────────────────────────────────────────────
 
 function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () => void }) {
@@ -551,14 +603,16 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
   const [isThinking, setIsThinking] = useState(false);
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState("");
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
   const fetchState = async () => {
     try {
       const state = await import("../api").then(api => api.fetchProjectState(project.id));
       setProjectState(state);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setToastMsg(err?.message || "Failed to load project state");
     } finally {
       setLoading(false);
     }
@@ -599,6 +653,8 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
     try {
       await import("../api").then(api => api.sendMessage(project.id, text));
       await fetchState();
+    } catch (err: any) {
+      setToastMsg(err?.message || "Failed to send message");
     } finally {
       setIsThinking(false);
     }
@@ -609,8 +665,12 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
   }
 
   async function beginAnalysis() {
-    await import("../api").then(api => api.triggerAction(project.id, "finish-sharing"));
-    await fetchState();
+    try {
+      await import("../api").then(api => api.triggerAction(project.id, "finish-sharing"));
+      await fetchState();
+    } catch (err: any) {
+      setToastMsg(err?.message || "Failed to begin analysis");
+    }
   }
 
   async function handleApprove() {
@@ -618,6 +678,8 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
     try {
       await import("../api").then(api => api.triggerAction(project.id, "approve-goals"));
       await fetchState();
+    } catch (err: any) {
+      setToastMsg(err?.message || "Failed to approve goals");
     } finally {
       setIsThinking(false);
     }
@@ -628,6 +690,8 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
     try {
       await import("../api").then(api => api.triggerAction(project.id, "reject-goals"));
       await fetchState();
+    } catch (err: any) {
+      setToastMsg(err?.message || "Failed to modify goals");
     } finally {
       setIsThinking(false);
     }
@@ -638,6 +702,8 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
     try {
       await import("../api").then(api => api.triggerAction(project.id, "unlock-requirements"));
       await fetchState();
+    } catch (err: any) {
+      setToastMsg(err?.message || "Failed to unlock requirements");
     } finally {
       setIsThinking(false);
     }
@@ -648,6 +714,7 @@ function ProjectWorkspace({ project, onBack }: { project: Project; onBack: () =>
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
+      {toastMsg && <Toast message={toastMsg} onDismiss={() => setToastMsg(null)} />}
       {/* Project nav bar */}
       <header className="flex-shrink-0 h-12 border-b border-border bg-card px-5 flex items-center justify-between">
         <div className="flex items-center gap-3">
