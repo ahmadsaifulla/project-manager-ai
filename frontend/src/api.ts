@@ -61,7 +61,10 @@ export const createProject = async (project: Partial<Project>): Promise<Project>
 
 export const fetchProjectState = async (projectId: string): Promise<Project & ProjectState> => {
   const res = await fetch(`${API_BASE}/projects/${projectId}`);
-  if (!res.ok) throw new Error("Failed to fetch project state");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to fetch project state" }));
+    throw new Error(err.detail || `Server error (${res.status})`);
+  }
   return res.json();
 };
 
@@ -71,7 +74,10 @@ export const sendMessage = async (projectId: string, content: string): Promise<a
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
   });
-  if (!res.ok) throw new Error("Failed to send message");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to send message" }));
+    throw new Error(err.detail || `Server error (${res.status})`);
+  }
   return res.json();
 };
 
@@ -79,7 +85,10 @@ export const triggerAction = async (projectId: string, action: string): Promise<
   const res = await fetch(`${API_BASE}/projects/${projectId}/${action}`, {
     method: "POST",
   });
-  if (!res.ok) throw new Error(`Failed to trigger action ${action}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: `Failed to trigger ${action}` }));
+    throw new Error(err.detail || `Server error (${res.status})`);
+  }
   return res.json();
 };
 

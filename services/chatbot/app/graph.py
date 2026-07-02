@@ -64,7 +64,7 @@ def get_llm_model():
         )
 
     return ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="llama3-8b-8192",
         temperature=0.1,
         max_retries=2,
     )
@@ -111,8 +111,6 @@ Write your raw, technical, engineering-grade assessment notes directly. Document
 
 CRITICAL GUARDRAIL: Do NOT output this engineering jargon to the user. This output is purely for background analysis and for the PM agent to read. Keep your output technical and concise.
 CRITICAL: You must return valid JSON matching the exact schema.
-DO NOT stringify any arrays (e.g. affected_layers). Return native JSON arrays of strings.
-Ensure the output matches the required Pydantic model perfectly.
 """
 
 SYSTEM_PM = """You are the public-facing Product Manager agent running Step 2 of the Dual-Core Processing Loop.
@@ -150,9 +148,7 @@ Architect Notes (TEMP_ARCHITECT.md):
 Current DRAFT_USER_STORIES.md:
 {draft_user_stories}
 
-CRITICAL: You must return valid JSON matching the exact schema.
-DO NOT stringify arrays (e.g. detected_gaps). Return a native JSON array of strings.
-Ensure the output matches the required Pydantic model perfectly."""
+CRITICAL: You must return valid JSON matching the exact schema."""
 
 SYSTEM_PLANNER = """You are the final translation and packaging agent.
 Your role is to read the approved project goals and generate a complete "Translation Package" for handoff.
@@ -161,17 +157,19 @@ This package must include:
 2. A formal Technical Specification document for the engineering team.
 3. A structured, cycle-free list of developer tasks (Directed Acyclic Graph) representing an ordered build plan.
 
-Each task must contain: id (e.g. TSK-001), title, description, priority (low/medium/high/critical), estimated_effort, and dependencies.
-The dependencies MUST form a valid DAG (no circular dependencies allowed).
+Each task must contain:
+- ref_id: A unique temporary integer starting from 1 (e.g., 1, 2, 3). This is ONLY for dependency mapping.
+- title, description, priority (low/medium/high/critical), estimated_effort
+- dependencies: A list of ref_id integers that this task depends on. Must form a valid DAG (no circular dependencies).
+
+Do NOT generate string IDs like TSK-001. Use ONLY integer ref_ids.
 
 You are completely generic — generate tasks appropriate for whatever project the user described.
 
 Approved Project Goals:
 {project_goals}
 
-CRITICAL: You must return valid JSON matching the exact schema.
-DO NOT stringify the `tasks` array. It must be a native JSON array of objects.
-Ensure the output matches the required Pydantic model perfectly."""
+CRITICAL: You must return valid JSON matching the exact schema."""
 
 
 # ─── DAG Validation ───────────────────────────────────────────────────────
@@ -280,8 +278,7 @@ If the request is a general greeting, welcome, or doesn't target any specific ar
 
 User Request: {user_request}
 
-CRITICAL: You must return valid JSON matching the exact schema.
-DO NOT stringify the `affected_layers` array. Return a native JSON array of strings."""
+Return a list of filenames that are affected."""
 
     try:
         model = get_llm_model()
@@ -467,16 +464,26 @@ def elicit_goals_node(state: ProjectState) -> Dict[str, Any]:
 def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     """
     Generates structured developer tasks from the approved project goals.
-    Runs DFS cycle-check post-processing.
+    Maps integer ref_ids to UUIDs, persists to DB, validates DAG integrity.
     """
+    import uuid
+    from .database import SessionLocal, TaskDb, task_dependencies_association
+
     goals = state.get("project_goals", "")
+    project_id = state.get("project_id", "")
     prompt = SYSTEM_PLANNER.format(project_goals=goals)
 
     model = get_llm_model()
     structured_model = model.with_structured_output(PlanTasksOutput)
     result = invoke_llm(structured_model, prompt)
 
-    tasks = []
+    # Build deterministic ref_id -> UUID mapping
+    ref_to_uuid: Dict[int, str] = {}
+    for t in result.tasks:
+        ref_to_uuid[t.ref_id] = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
+
+    # Construct Task objects with real UUIDs and mapped dependencies
+    tasks: List[Task] = []
     for t in result.tasks:
         priority_val = TaskPriority.MEDIUM
         p_lower = t.priority.lower()
@@ -487,16 +494,18 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
         elif "critical" in p_lower:
             priority_val = TaskPriority.CRITICAL
 
+        mapped_deps = [ref_to_uuid[dep] for dep in t.dependencies if dep in ref_to_uuid]
+
         tasks.append(
             Task(
-                id=t.id,
+                id=ref_to_uuid[t.ref_id],
                 title=t.title,
                 description=t.description,
                 status=TaskStatus.TODO,
                 assignee=None,
                 priority=priority_val,
                 estimated_effort=t.estimated_effort,
-                dependencies=t.dependencies,
+                dependencies=mapped_deps,
             )
         )
 
@@ -505,6 +514,53 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
         logger.warning("[PlanTasks] WARNING: Circular dependency detected. Clearing all dependencies.")
         for t in tasks:
             t.dependencies = []
+
+    # Persist tasks to the database inside the node
+    db = SessionLocal()
+    try:
+        # Clean previous tasks for this project
+        db.execute(
+            task_dependencies_association.delete().where(
+                task_dependencies_association.c.task_id.in_(
+                    db.query(TaskDb.id).filter(TaskDb.project_id == project_id)
+                )
+            )
+        )
+        db.commit()
+        db.query(TaskDb).filter(TaskDb.project_id == project_id).delete()
+        db.commit()
+
+        # Insert new tasks
+        for t in tasks:
+            db_t = TaskDb(
+                id=t.id,
+                project_id=project_id,
+                title=t.title,
+                description=t.description,
+                status=t.status,
+                assignee=None,
+                priority=t.priority,
+                estimated_effort=t.estimated_effort,
+            )
+            db.add(db_t)
+        db.commit()
+
+        # Insert dependency relations
+        for t in tasks:
+            if t.dependencies:
+                db_t = db.query(TaskDb).filter(TaskDb.id == t.id).first()
+                if db_t:
+                    for dep_id in t.dependencies:
+                        dep_task = db.query(TaskDb).filter(TaskDb.id == dep_id).first()
+                        if dep_task:
+                            db_t.dependencies.append(dep_task)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[PlanTasks] DB commit failed: {e}")
+        raise RuntimeError(f"Failed to persist tasks to database: {e}")
+    finally:
+        db.close()
 
     return {
         "tasks": tasks,

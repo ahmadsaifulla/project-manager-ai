@@ -362,7 +362,7 @@ async def finish_sharing(project_id: str):
 
 
 @app.post("/api/projects/{project_id}/approve-goals")
-async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def approve_goals(project_id: str, background_tasks: BackgroundTasks):
     """Approve goals, trigger task generation, and persist tasks to the database."""
     config = {"configurable": {"thread_id": project_id}}
     state = await get_project_state(project_id)
@@ -375,63 +375,29 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
             status_code=400, detail="Cannot approve goals with unresolved gaps"
         )
 
-    # Trigger goal approval and task generation
-    concluding_msg = AIMessage(content="Got it! Starting your project now...")
-    await app_graph.aupdate_state(
-        config,
-        {
-            "goals_approved": True,
-            "elicitation_phase": "goals_approved",
-            "messages": [concluding_msg],
-        },
-        as_node="elicit_goals",
-    )
-    
-    # Resume graph execution to trigger the `plan_tasks` node
-    await app_graph.ainvoke(None, config)
+    # Trigger goal approval and task generation via standard LangGraph flow
+    try:
+        concluding_msg = AIMessage(content="Got it! Starting your project now...")
+        await app_graph.aupdate_state(
+            config,
+            {
+                "goals_approved": True,
+                "elicitation_phase": "goals_approved",
+                "messages": [concluding_msg],
+            },
+            as_node="elicit_goals",
+        )
+
+        # Resume graph execution — triggers plan_tasks node (which handles DB persistence)
+        await app_graph.ainvoke(None, config)
+    except Exception as e:
+        logger.error(f"[ApproveGoals] Task generation failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to generate tasks. Please try again."
+        )
 
     updated_state_snap = (await app_graph.aget_state(config)).values
-
-    # Persist generated tasks to SQL database
-    generated_tasks: List[Task] = updated_state_snap.get("tasks", [])
-
-    # Clean previous tasks for this project
-    db.execute(
-        task_dependencies_association.delete().where(
-            task_dependencies_association.c.task_id.in_(
-                db.query(TaskDb.id).filter(TaskDb.project_id == project_id)
-            )
-        )
-    )
-    db.commit()
-    db.query(TaskDb).filter(TaskDb.project_id == project_id).delete()
-    db.commit()
-
-    # Insert new tasks
-    for t in generated_tasks:
-        db_t = TaskDb(
-            id=t.id,
-            project_id=project_id,
-            title=t.title,
-            description=t.description,
-            status=t.status,
-            assignee=None,
-            priority=t.priority,
-            estimated_effort=t.estimated_effort,
-        )
-        db.add(db_t)
-    db.commit()
-
-    # Insert dependency relations
-    for t in generated_tasks:
-        if t.dependencies:
-            db_t = db.query(TaskDb).filter(TaskDb.id == t.id).first()
-            if db_t:
-                for dep_id in t.dependencies:
-                    dep_task = db.query(TaskDb).filter(TaskDb.id == dep_id).first()
-                    if dep_task:
-                        db_t.dependencies.append(dep_task)
-    db.commit()
 
     # State finalization (snapshot log + architecture consolidation)
     try:

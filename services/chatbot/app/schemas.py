@@ -87,12 +87,12 @@ class PMOutput(BaseModel):
 
 class TaskModel(BaseModel):
     """Individual task output from the task planner LLM."""
-    id: str = Field(default="TSK-UNKNOWN", description="Unique task ID, e.g. TSK-001")
+    ref_id: int = Field(description="A unique temporary integer for this task (e.g., 1, 2, 3). Used only for dependency mapping.")
     title: str = Field(default="Untitled Task", description="Brief title of the task")
     description: str = Field(default="", description="Detailed scope of the work")
     priority: str = Field(default="medium", description="low, medium, high, or critical")
     estimated_effort: str = Field(default="TBD", description="Estimated effort, e.g. '6 hours', '3 days'")
-    dependencies: List[str] = Field(default_factory=list, description="List of task IDs this task depends on. Must form an acyclic graph.")
+    dependencies: List[int] = Field(default_factory=list, description="List of ref_id integers this task depends on. Must form an acyclic graph.")
 
 
 class PlanTasksOutput(BaseModel):
