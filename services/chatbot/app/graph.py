@@ -158,7 +158,7 @@ This package must include:
 3. A structured, cycle-free list of developer tasks (Directed Acyclic Graph) representing an ordered build plan.
 
 Each task must contain:
-- id: The existing UUID string if updating an existing task, or null if this is a brand-new task.
+- id: The exact existing UUID string if updating an existing task, or the literal string "NEW" if this is a brand-new task.
 - ref_id: A unique temporary integer starting from 1 (e.g., 1, 2, 3). This is ONLY for dependency mapping.
 - title, description, priority (low/medium/high/critical), estimated_effort
 - dependencies: A list of ref_id integers that this task depends on. Must form a valid DAG (no circular dependencies).
@@ -466,7 +466,7 @@ def _serialize_existing_tasks(existing_tasks) -> str:
     """Serialize existing DB tasks into a prompt-injectable text block."""
     import json
     if not existing_tasks:
-        return """This is a NEW project with no existing tasks. Generate all tasks as new (set id to null)."""
+        return """This is a NEW project with no existing tasks. Generate all tasks as new (set id to "NEW")."""
 
     task_list = []
     for t in existing_tasks:
@@ -482,7 +482,7 @@ def _serialize_existing_tasks(existing_tasks) -> str:
 You are UPDATING an existing project. Below is the current list of tasks with their UUIDs.
 RULES:
 1. If a task from this list still applies, you MUST set its "id" field to the EXACT UUID shown below. Do NOT generate a new id.
-2. If you are adding a brand-new task that does not exist below, set its "id" field to null.
+2. If you are adding a brand-new task that does not exist below, you MUST set its "id" field to the exact string "NEW".
 3. You may update the title, description, priority, and estimated_effort of existing tasks to reflect the new requirements.
 4. CRITICAL: You MUST include ALL existing tasks from this list in your output, regardless of their current status. Do NOT omit a task just because it is 'in_progress' or 'in_qc'.
 
@@ -529,12 +529,12 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     # If the LLM returned an existing UUID, reuse it. Otherwise, mint a new one.
     ref_to_uuid: Dict[int, str] = {}
     for t in result.tasks:
-        if t.id and t.id in existing_ids:
-            # LLM echoed back a known UUID — reuse it
-            ref_to_uuid[t.ref_id] = t.id
-        else:
+        if t.id == "NEW" or t.id not in existing_ids:
             # New task — generate a fresh UUID
             ref_to_uuid[t.ref_id] = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
+        else:
+            # LLM echoed back a known UUID — reuse it
+            ref_to_uuid[t.ref_id] = t.id
 
     # ── Phase 3: Construct Task objects ───────────────────────────────
     tasks: List[Task] = []
