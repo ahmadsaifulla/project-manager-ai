@@ -484,7 +484,7 @@ RULES:
 1. If a task from this list still applies, you MUST set its "id" field to the EXACT UUID shown below. Do NOT generate a new id.
 2. If you are adding a brand-new task that does not exist below, set its "id" field to null.
 3. You may update the title, description, priority, and estimated_effort of existing tasks to reflect the new requirements.
-4. Do NOT remove existing tasks unless they are completely obsolete. If in doubt, keep them.
+4. CRITICAL: You MUST include ALL existing tasks from this list in your output, regardless of their current status. Do NOT omit a task just because it is 'in_progress' or 'in_qc'.
 
 Existing Tasks (JSON):
 """ + json.dumps(task_list, indent=2)
@@ -622,11 +622,31 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
                             db_t.dependencies.append(dep_task)
         db.commit()
 
-        # 4d. Log orphaned tasks (in DB but not in LLM output) — preserved, not deleted
+        # 4d. Handle orphaned tasks (in DB but not in LLM output)
         llm_ids = {t.id for t in tasks}
-        orphaned = existing_ids - llm_ids
-        if orphaned:
-            logger.warning(f"[SmartMerge] {len(orphaned)} orphaned tasks preserved (not in LLM output): {orphaned}")
+        orphaned_ids = existing_ids - llm_ids
+        if orphaned_ids:
+            for o_id in orphaned_ids:
+                db_o = db.query(TaskDb).filter(TaskDb.id == o_id).first()
+                if db_o:
+                    if db_o.status == TaskStatus.TODO:
+                        db.delete(db_o)
+                        logger.info(f"[SmartMerge] Deleted orphaned TODO task: {o_id}")
+                    else:
+                        logger.warning(f"[SmartMerge] Orphaned active task preserved (status={db_o.status.value}): {o_id}")
+                        # Re-instantiate it as a state Task to keep it in the LangGraph state
+                        preserved_task = Task(
+                            id=db_o.id,
+                            title=db_o.title,
+                            description=db_o.description,
+                            status=db_o.status,
+                            assignee=db_o.assignee,
+                            priority=db_o.priority,
+                            estimated_effort=db_o.estimated_effort,
+                            dependencies=[dep.id for dep in db_o.dependencies]
+                        )
+                        tasks.append(preserved_task)
+            db.commit()
 
     except Exception as e:
         db.rollback()
