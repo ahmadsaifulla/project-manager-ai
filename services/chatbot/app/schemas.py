@@ -87,6 +87,7 @@ class PMOutput(BaseModel):
 
 class TaskModel(BaseModel):
     """Individual task output from the task planner LLM."""
+    id: Optional[str] = Field(default=None, description="The existing UUID of this task if it already exists in the database. Use the EXACT UUID provided in the existing tasks list. Set to null ONLY for brand-new tasks.")
     ref_id: int = Field(description="A unique temporary integer for this task (e.g., 1, 2, 3). Used only for dependency mapping.")
     title: str = Field(default="Untitled Task", description="Brief title of the task")
     description: str = Field(default="", description="Detailed scope of the work")

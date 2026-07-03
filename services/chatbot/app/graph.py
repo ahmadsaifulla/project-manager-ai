@@ -158,13 +158,14 @@ This package must include:
 3. A structured, cycle-free list of developer tasks (Directed Acyclic Graph) representing an ordered build plan.
 
 Each task must contain:
+- id: The existing UUID string if updating an existing task, or null if this is a brand-new task.
 - ref_id: A unique temporary integer starting from 1 (e.g., 1, 2, 3). This is ONLY for dependency mapping.
 - title, description, priority (low/medium/high/critical), estimated_effort
 - dependencies: A list of ref_id integers that this task depends on. Must form a valid DAG (no circular dependencies).
 
-Do NOT generate string IDs like TSK-001. Use ONLY integer ref_ids.
-
 You are completely generic — generate tasks appropriate for whatever project the user described.
+
+{existing_tasks_block}
 
 Approved Project Goals:
 {project_goals}
@@ -461,28 +462,81 @@ def elicit_goals_node(state: ProjectState) -> Dict[str, Any]:
     }
 
 
+def _serialize_existing_tasks(existing_tasks) -> str:
+    """Serialize existing DB tasks into a prompt-injectable text block."""
+    import json
+    if not existing_tasks:
+        return """This is a NEW project with no existing tasks. Generate all tasks as new (set id to null)."""
+
+    task_list = []
+    for t in existing_tasks:
+        task_list.append({
+            "id": t.id,
+            "title": t.title,
+            "description": t.description[:200],  # Truncate to save tokens
+            "priority": t.priority.value,
+            "status": t.status.value,
+        })
+
+    block = """CRITICAL — EXISTING TASK STATE:
+You are UPDATING an existing project. Below is the current list of tasks with their UUIDs.
+RULES:
+1. If a task from this list still applies, you MUST set its "id" field to the EXACT UUID shown below. Do NOT generate a new id.
+2. If you are adding a brand-new task that does not exist below, set its "id" field to null.
+3. You may update the title, description, priority, and estimated_effort of existing tasks to reflect the new requirements.
+4. Do NOT remove existing tasks unless they are completely obsolete. If in doubt, keep them.
+
+Existing Tasks (JSON):
+""" + json.dumps(task_list, indent=2)
+
+    return block
+
+
 def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     """
     Generates structured developer tasks from the approved project goals.
-    Maps integer ref_ids to UUIDs, persists to DB, validates DAG integrity.
+    Implements Smart Merge: feeds existing task UUIDs to the LLM, then
+    upserts by UUID — preserving status and evaluation_feedback for
+    existing tasks while inserting new ones.
     """
     import uuid
     from .database import SessionLocal, TaskDb, task_dependencies_association
 
     goals = state.get("project_goals", "")
     project_id = state.get("project_id", "")
-    prompt = SYSTEM_PLANNER.format(project_goals=goals)
+
+    # ── Phase 1: Query existing tasks and inject into prompt ──────────
+    db = SessionLocal()
+    try:
+        existing_db_tasks = db.query(TaskDb).filter(TaskDb.project_id == project_id).all()
+        existing_ids = {t.id for t in existing_db_tasks}
+        existing_tasks_block = _serialize_existing_tasks(existing_db_tasks)
+    finally:
+        db.close()
+
+    logger.info(f"[PlanTasks] Found {len(existing_ids)} existing tasks for project {project_id}")
+
+    prompt = SYSTEM_PLANNER.format(
+        project_goals=goals,
+        existing_tasks_block=existing_tasks_block,
+    )
 
     model = get_llm_model()
     structured_model = model.with_structured_output(PlanTasksOutput)
     result = invoke_llm(structured_model, prompt)
 
-    # Build deterministic ref_id -> UUID mapping
+    # ── Phase 2: Build ref_id → UUID mapping ──────────────────────────
+    # If the LLM returned an existing UUID, reuse it. Otherwise, mint a new one.
     ref_to_uuid: Dict[int, str] = {}
     for t in result.tasks:
-        ref_to_uuid[t.ref_id] = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
+        if t.id and t.id in existing_ids:
+            # LLM echoed back a known UUID — reuse it
+            ref_to_uuid[t.ref_id] = t.id
+        else:
+            # New task — generate a fresh UUID
+            ref_to_uuid[t.ref_id] = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
 
-    # Construct Task objects with real UUIDs and mapped dependencies
+    # ── Phase 3: Construct Task objects ───────────────────────────────
     tasks: List[Task] = []
     for t in result.tasks:
         priority_val = TaskPriority.MEDIUM
@@ -495,13 +549,14 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
             priority_val = TaskPriority.CRITICAL
 
         mapped_deps = [ref_to_uuid[dep] for dep in t.dependencies if dep in ref_to_uuid]
+        task_uuid = ref_to_uuid[t.ref_id]
 
         tasks.append(
             Task(
-                id=ref_to_uuid[t.ref_id],
+                id=task_uuid,
                 title=t.title,
                 description=t.description,
-                status=TaskStatus.TODO,
+                status=TaskStatus.TODO,  # Default for state object; DB merge preserves real status
                 assignee=None,
                 priority=priority_val,
                 estimated_effort=t.estimated_effort,
@@ -515,10 +570,10 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
         for t in tasks:
             t.dependencies = []
 
-    # Persist tasks to the database inside the node
+    # ── Phase 4: Smart Merge — Upsert by UUID ─────────────────────────
     db = SessionLocal()
     try:
-        # Clean previous tasks for this project
+        # 4a. Clear ALL dependency edges for this project (we'll rebuild them)
         db.execute(
             task_dependencies_association.delete().where(
                 task_dependencies_association.c.task_id.in_(
@@ -527,25 +582,36 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
             )
         )
         db.commit()
-        db.query(TaskDb).filter(TaskDb.project_id == project_id).delete()
-        db.commit()
 
-        # Insert new tasks
+        # 4b. Upsert each task
         for t in tasks:
-            db_t = TaskDb(
-                id=t.id,
-                project_id=project_id,
-                title=t.title,
-                description=t.description,
-                status=t.status,
-                assignee=None,
-                priority=t.priority,
-                estimated_effort=t.estimated_effort,
-            )
-            db.add(db_t)
+            existing_row = db.query(TaskDb).filter(TaskDb.id == t.id, TaskDb.project_id == project_id).first()
+
+            if existing_row:
+                # ── UPDATE: Refresh LLM-mutable fields, PRESERVE user-mutable fields ──
+                existing_row.title = t.title
+                existing_row.description = t.description
+                existing_row.priority = t.priority
+                existing_row.estimated_effort = t.estimated_effort
+                # STRICTLY PRESERVED: status, evaluation_feedback, assignee
+                logger.info(f"[SmartMerge] Updated existing task {t.id} (status preserved: {existing_row.status.value})")
+            else:
+                # ── INSERT: Brand-new task ──
+                db_t = TaskDb(
+                    id=t.id,
+                    project_id=project_id,
+                    title=t.title,
+                    description=t.description,
+                    status=TaskStatus.TODO,
+                    assignee=None,
+                    priority=t.priority,
+                    estimated_effort=t.estimated_effort,
+                )
+                db.add(db_t)
+                logger.info(f"[SmartMerge] Inserted new task {t.id}: {t.title}")
         db.commit()
 
-        # Insert dependency relations
+        # 4c. Rebuild dependency relations
         for t in tasks:
             if t.dependencies:
                 db_t = db.query(TaskDb).filter(TaskDb.id == t.id).first()
@@ -555,6 +621,13 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
                         if dep_task:
                             db_t.dependencies.append(dep_task)
         db.commit()
+
+        # 4d. Log orphaned tasks (in DB but not in LLM output) — preserved, not deleted
+        llm_ids = {t.id for t in tasks}
+        orphaned = existing_ids - llm_ids
+        if orphaned:
+            logger.warning(f"[SmartMerge] {len(orphaned)} orphaned tasks preserved (not in LLM output): {orphaned}")
+
     except Exception as e:
         db.rollback()
         logger.error(f"[PlanTasks] DB commit failed: {e}")
