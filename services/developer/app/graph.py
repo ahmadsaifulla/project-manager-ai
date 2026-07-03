@@ -49,6 +49,7 @@ Here is the git diff for the current task:
 Perform a strict text-based alignment audit against the rules.
 First, provide corrective feedback in a markdown list. 
 Then, on the very last line, output exactly "VERDICT: APPROVED" or "VERDICT: REJECTED".
+You must output your evaluation in valid JSON format.
 """
 
     # Initialize OpenAI client pointing to Groq
