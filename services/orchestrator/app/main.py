@@ -1,5 +1,5 @@
 import logging
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
@@ -169,14 +169,35 @@ async def proxy_get_tasks(project_id: str):
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
+async def trigger_qc_evaluation(project_id: str, task_id: str):
+    """Background webhook to trigger the Developer Node QC evaluation."""
+    target_url = "http://127.0.0.1:8002/api/qc/evaluate"
+    payload = {
+        "project_id": project_id,
+        "task_id": task_id
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(target_url, json=payload, timeout=60.0)
+            response.raise_for_status()
+            logging.info(f"Successfully triggered QC node for Task {task_id}")
+    except Exception as e:
+        # Fails gracefully without crashing the main orchestrator loop
+        logging.error(f"Failed to trigger QC evaluation for Task {task_id}: {e}")
+
 @app.patch("/api/projects/{project_id}/tasks/{task_id}")
-async def proxy_update_task(project_id: str, task_id: str, update: TaskUpdateRequest):
+async def proxy_update_task(project_id: str, task_id: str, update: TaskUpdateRequest, background_tasks: BackgroundTasks):
     """Proxy task updates."""
     payload = update.model_dump(exclude_unset=True)
     target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/tasks/{task_id}"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.patch(target_url, json=payload, timeout=30.0)
+            
+            # If the patch was successful and status is moved to IN QC, trigger the background evaluation
+            if response.status_code == 200 and update.status == "in_qc":
+                background_tasks.add_task(trigger_qc_evaluation, project_id, task_id)
+                
             return JSONResponse(status_code=response.status_code, content=response.json())
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
