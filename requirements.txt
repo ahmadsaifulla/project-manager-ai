@@ -55,3 +55,4 @@ psycopg_pool
 langgraph-checkpoint-postgres
 psycopg2-binary
 langchain-openai
+langchain-openai

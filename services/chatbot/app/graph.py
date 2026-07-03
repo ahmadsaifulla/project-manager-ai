@@ -50,21 +50,23 @@ def get_workspace_dir(project_id: str) -> str:
 
 def get_llm_model():
     """
-    Initialize and return a ChatGroq instance.
-    Requires GROQ_API_KEY env var.
+    Returns the ChatOpenAI model initialized with the API key from .env.
+    Requires OPENROUTER_API_KEY env var.
     """
-    from langchain_groq import ChatGroq
+    from langchain_openai import ChatOpenAI
     from dotenv import load_dotenv
     load_dotenv()
 
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "No API key found. Set GROQ_API_KEY environment variable."
+            "No API key found. Set OPENROUTER_API_KEY environment variable."
         )
 
-    return ChatGroq(
-        model="llama-3.1-8b-instant",
+    return ChatOpenAI(
+        model="meta-llama/llama-3.1-8b-instruct:free",
+        openai_api_key=api_key,
+        openai_api_base="https://openrouter.ai/api/v1",
         temperature=0.1,
         max_retries=2,
     )

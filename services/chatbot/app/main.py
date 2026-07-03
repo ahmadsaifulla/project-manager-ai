@@ -378,18 +378,18 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks):
     # Trigger goal approval and task generation via standard LangGraph flow
     try:
         concluding_msg = AIMessage(content="Got it! Starting your project now...")
-        await app_graph.aupdate_state(
-            config,
+        
+        # Execute securely: ainvoke handles the state update as part of the transaction.
+        # If plan_tasks crashes (e.g., API error), the checkpoint is aborted, 
+        # and goals_approved remains False in the DB.
+        await app_graph.ainvoke(
             {
                 "goals_approved": True,
                 "elicitation_phase": "goals_approved",
                 "messages": [concluding_msg],
             },
-            as_node="elicit_goals",
+            config
         )
-
-        # Resume graph execution — triggers plan_tasks node (which handles DB persistence)
-        await app_graph.ainvoke(None, config)
     except Exception as e:
         logger.error(f"[ApproveGoals] Task generation failed: {e}")
         raise HTTPException(
