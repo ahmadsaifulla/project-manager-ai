@@ -503,7 +503,7 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     Executes atomic CQRS commands from the LLM.
     """
     import uuid
-    from .database import SessionLocal, TaskDb
+    from .database import SessionLocal, TaskDb, ProjectDb
 
     goals = state.get("project_goals", "")
     project_id = state.get("project_id", "")
@@ -511,6 +511,9 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     # ── Phase 1: Query existing tasks and inject into prompt ──────────
     db = SessionLocal()
     try:
+        project_record = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+        tenant_id = project_record.tenant_id if project_record else None
+        
         existing_db_tasks = db.query(TaskDb).filter(TaskDb.project_id == project_id).all()
         existing_tasks_block = _serialize_existing_tasks(existing_db_tasks)
     finally:
@@ -532,6 +535,9 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     # ── Phase 2: Command Executor Loop (Idempotent Upsert) ───────────
     db = SessionLocal()
     try:
+        project_record = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+        tenant_id = project_record.tenant_id if project_record else None
+        
         for cmd in result.commands:
             if cmd.command_type == "CREATE":
                 # ── Idempotent lookup: check if a task with the same title
@@ -562,6 +568,7 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
                     new_uuid = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
                     db_t = TaskDb(
                         id=new_uuid,
+                        tenant_id=tenant_id,
                         project_id=project_id,
                         title=cmd.title,
                         description=cmd.description,
