@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     CheckConstraint,
 )
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from .schemas import TaskStatus, TaskPriority
 
@@ -55,12 +56,28 @@ task_dependencies_association = Table(
 )
 
 
+
+# ─── Tenant Model ──────────────────────────────────────────────────────────
+
+class TenantDb(Base):
+    __tablename__ = "tenants"
+
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    name = Column(String(255), nullable=False)
+    subscription_tier = Column(String(50), nullable=False)
+
+    projects = relationship("ProjectDb", back_populates="tenant", cascade="all, delete-orphan")
+    tasks = relationship("TaskDb", back_populates="tenant", cascade="all, delete-orphan")
+    requirements = relationship("RequirementDb", back_populates="tenant", cascade="all, delete-orphan")
+    messages = relationship("MessageDb", back_populates="tenant", cascade="all, delete-orphan")
+
 # ─── User Model ───────────────────────────────────────────────────────────
 
 class UserDb(Base):
     __tablename__ = "users"
 
     id = Column(String(50), primary_key=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
     avatar_url = Column(String(255), nullable=True)
@@ -75,6 +92,7 @@ class ProjectDb(Base):
     __tablename__ = "projects"
 
     id = Column(String(50), primary_key=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     status = Column(String(50), default="listening")  # listening, reviewing, approved, in-progress
@@ -87,6 +105,7 @@ class ProjectDb(Base):
     updated_at = Column(DateTime, default=datetime.now(UTC), onupdate=datetime.now(UTC))
 
     tasks = relationship("TaskDb", back_populates="project", cascade="all, delete-orphan")
+    tenant = relationship("TenantDb", back_populates="projects")
 
 
 # ─── Task Model ───────────────────────────────────────────────────────────
@@ -95,6 +114,8 @@ class TaskDb(Base):
     __tablename__ = "tasks"
 
     id = Column(String(50), primary_key=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id = Column(String(50), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=False)
@@ -110,6 +131,7 @@ class TaskDb(Base):
 
     assigned_user = relationship("UserDb", back_populates="tasks")
     project = relationship("ProjectDb", back_populates="tasks")
+    tenant = relationship("TenantDb", back_populates="tasks")
 
     # Self-referencing many-to-many relationship for task dependencies
     dependencies = relationship(
@@ -120,6 +142,31 @@ class TaskDb(Base):
         backref="dependent_tasks",
     )
 
+
+
+# ─── Requirement Model ────────────────────────────────────────────────────
+
+class RequirementDb(Base):
+    __tablename__ = "requirements"
+
+    id = Column(String(50), primary_key=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    
+    tenant = relationship("TenantDb", back_populates="requirements")
+
+# ─── Message Model ────────────────────────────────────────────────────────
+
+class MessageDb(Base):
+    __tablename__ = "messages"
+
+    id = Column(String(50), primary_key=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(50), nullable=False)
+    content = Column(Text, nullable=False)
+    
+    tenant = relationship("TenantDb", back_populates="messages")
 
 # ─── Database Helpers ──────────────────────────────────────────────────────
 
