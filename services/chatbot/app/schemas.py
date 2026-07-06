@@ -83,6 +83,14 @@ class PMOutput(BaseModel):
         default="",
         description="Complete, updated text of DRAFT_USER_STORIES.md, appending newly confirmed requirements systematically."
     )
+    project_name: Optional[str] = Field(
+        default=None,
+        description="Concise project name (e.g., 'E-Commerce Backend'). Return null if already named or insufficient context."
+    )
+    project_description: Optional[str] = Field(
+        default=None,
+        description="1-sentence project description. Return null if already named or insufficient context."
+    )
 
 
 class TaskModel(BaseModel):

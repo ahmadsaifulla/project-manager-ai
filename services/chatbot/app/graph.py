@@ -142,6 +142,8 @@ We are currently in the "{elicitation_phase}" phase.
    ### What Needs to Be Done / Next Steps
    ### What to Update
 
+- If the user has provided enough context to understand what they are building, and the project does not already have a specific name, output a concise project_name (e.g., 'E-Commerce Backend') and a 1-sentence project_description. If it is already named or context is insufficient, return null.
+
 Architect Notes (TEMP_ARCHITECT.md):
 {architect_notes}
 
@@ -447,6 +449,22 @@ def elicit_goals_node(state: ProjectState) -> Dict[str, Any]:
 
     out_gaps = pm_result.detected_gaps
     out_questions = [pm_result.next_question] if out_gaps else []
+    
+    # Auto-naming DB update
+    if pm_result.project_name and pm_result.project_description:
+        from .database import SessionLocal, ProjectDb
+        db = SessionLocal()
+        try:
+            proj = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+            if proj and (proj.name == "Untitled Project" or proj.name == project_id):
+                proj.name = pm_result.project_name
+                proj.description = pm_result.project_description
+                db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[Auto-naming] Failed to save project name: {e}")
+        finally:
+            db.close()
 
     # In listening phase, suppress gaps — just listen
     if phase == "listening":
