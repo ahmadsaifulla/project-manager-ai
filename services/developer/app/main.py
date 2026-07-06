@@ -11,6 +11,8 @@ logging.basicConfig(level=logging.INFO)
 # Step A: Define the Request Schema
 class QCRequest(BaseModel):
     task_id: str
+    task_title: str | None = None
+    task_description: str | None = None
     repo_name: str
     branch_name: str
 
@@ -30,6 +32,8 @@ def evaluate_code(request: QCRequest):
         # Initialize the starting state
         initial_state: QCState = {
             "task_id": request.task_id,
+            "task_title": request.task_title,
+            "task_description": request.task_description,
             "repo_name": request.repo_name,
             "branch_name": request.branch_name,
             "git_diff": None,

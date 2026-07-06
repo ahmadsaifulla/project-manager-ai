@@ -11,6 +11,8 @@ load_dotenv()
 # Define the State Schema for the QC Agent
 class QCState(TypedDict):
     task_id: str
+    task_title: Optional[str]
+    task_description: Optional[str]
     repo_name: str
     branch_name: str
     git_diff: Optional[str]
@@ -43,13 +45,19 @@ You are a strict Quality Control AI for a software project.
 Here are the architecture rules:
 {rules}
 
+Task ID: {state['task_id']}
+Task Title: {state.get('task_title', 'No Title provided')}
+Task Description: {state.get('task_description', 'No Description provided')}
+
 Here is the git diff for the current task:
 {state['git_diff']}
 
-Perform a strict text-based alignment audit against the rules.
-First, provide corrective feedback in a markdown list. 
-Then, on the very last line, output exactly "VERDICT: APPROVED" or "VERDICT: REJECTED".
-You must output your evaluation in valid JSON format.
+Perform a strict text-based alignment audit against the rules based on the Task context.
+You must output your evaluation in valid JSON format matching this exact schema:
+{{
+    "feedback": "- Your corrective feedback in a markdown list format...",
+    "verdict": "APPROVED or REJECTED"
+}}
 """
 
     # Initialize OpenAI client pointing to Groq
@@ -63,21 +71,25 @@ You must output your evaluation in valid JSON format.
     )
 
     response = client.chat.completions.create(
-        model="qwen/qwen3.6-27b",
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
         response_format={"type": "json_object"}
     )
     
-    result_text = response.choices[0].message.content or ""
+    result_text = response.choices[0].message.content or "{}"
     
-    # Parse verdict
-    if "VERDICT: APPROVED" in result_text.upper():
-        verdict = True
-    else:
+    import json
+    try:
+        data = json.loads(result_text)
+        feedback = data.get("feedback", "")
+        verdict_str = str(data.get("verdict", "")).upper()
+        verdict = verdict_str == "APPROVED"
+    except Exception:
         verdict = False
+        feedback = result_text
         
-    return {"verdict": verdict, "feedback": result_text}
+    return {"verdict": verdict, "feedback": feedback}
 
 def handoff_to_qa(state: QCState) -> dict:
     """

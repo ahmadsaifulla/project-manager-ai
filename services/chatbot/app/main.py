@@ -474,11 +474,13 @@ class TaskUpdateRequest(BaseModel):
     status: str | None = None
     assignee: str | None = None
 
-async def trigger_qc_node(task_id: str, repo_name: str, branch_name: str):
+async def trigger_qc_node(task_id: str, repo_name: str, branch_name: str, task_title: str, task_description: str):
     try:
         target_url = "http://127.0.0.1:8000/api/qc/evaluate"
         payload = {
             "task_id": task_id,
+            "task_title": task_title,
+            "task_description": task_description,
             "repo_name": repo_name,
             "branch_name": branch_name
         }
@@ -521,7 +523,7 @@ async def update_project_task(project_id: str, task_id: str, payload: TaskUpdate
     db.refresh(task)
     
     if task.status == TaskStatus.IN_QC:
-        background_tasks.add_task(trigger_qc_node, task.id, "mock-repo", "mock-branch")
+        background_tasks.add_task(trigger_qc_node, task.id, "mock-repo", "mock-branch", task.title, task.description)
         
     return {"status": "success", "task": {"id": task.id, "status": task.status.value, "evaluation_feedback": task.evaluation_feedback}}
 
