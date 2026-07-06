@@ -184,10 +184,31 @@ async def lifespan(application: FastAPI):
     init_db()
     db = next(get_db())
     try:
+        # ── Step 1: Ensure a default tenant exists ────────────────────────────
+        # On a fresh database, auto-create the "default" tenant so the app
+        # can boot without requiring a manual seed step. On subsequent starts,
+        # the first tenant found is reused (preserves externally seeded tenants).
+        default_tenant = db.query(TenantDb).first()
+        if not default_tenant:
+            import uuid as _uuid
+            default_tenant = TenantDb(
+                id=_uuid.uuid4(),
+                name="Default Tenant",
+                subscription_tier="free",
+            )
+            db.add(default_tenant)
+            db.commit()
+            db.refresh(default_tenant)
+            logger.info(f"[Lifespan] Auto-created default tenant: {default_tenant.id}")
+        else:
+            logger.info(f"[Lifespan] Using existing tenant: {default_tenant.id} ({default_tenant.name})")
+
+        # ── Step 2: Seed default user assigned to that tenant ─────────────────
         if db.query(UserDb).count() == 0:
             sample_users = [
                 UserDb(
                     id="usr_default",
+                    tenant_id=default_tenant.id,
                     name="Developer",
                     email="dev@localhost",
                     avatar_url=None,
@@ -195,8 +216,10 @@ async def lifespan(application: FastAPI):
             ]
             db.add_all(sample_users)
             db.commit()
+            logger.info("[Lifespan] Seeded default user 'usr_default'.")
     finally:
         db.close()
+
     
     try:
         yield
