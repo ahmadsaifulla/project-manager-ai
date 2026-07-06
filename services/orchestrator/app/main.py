@@ -102,35 +102,38 @@ async def proxy_qc_evaluation(request: Request):
 
 # Step B: Chatbot Node Proxy
 @app.get("/api/projects")
-async def proxy_list_projects():
+async def proxy_list_projects(request: Request):
     """Proxy to list all projects."""
     target_url = f"{project_state['chatbot_node_url']}/api/projects"
+    headers = {"X-Tenant-ID": request.headers.get("X-Tenant-ID", "")}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(target_url, timeout=30.0)
+            response = await client.get(target_url, headers=headers, timeout=30.0)
             return JSONResponse(status_code=response.status_code, content=response.json())
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
 @app.post("/api/projects")
-async def proxy_create_project(project: ProjectCreateRequest):
+async def proxy_create_project(project: ProjectCreateRequest, request: Request):
     """Proxy to create a new project."""
     payload = project.model_dump(exclude_unset=True)
     target_url = f"{project_state['chatbot_node_url']}/api/projects"
+    headers = {"X-Tenant-ID": request.headers.get("X-Tenant-ID", "")}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(target_url, json=payload, timeout=30.0)
+            response = await client.post(target_url, json=payload, headers=headers, timeout=30.0)
             return JSONResponse(status_code=response.status_code, content=response.json())
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
 @app.get("/api/projects/{project_id}")
-async def proxy_get_project(project_id: str):
+async def proxy_get_project(project_id: str, request: Request):
     """Proxy to get project state."""
     target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}"
+    headers = {"X-Tenant-ID": request.headers.get("X-Tenant-ID", "")}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(target_url, timeout=30.0)
+            response = await client.get(target_url, headers=headers, timeout=30.0)
             return JSONResponse(status_code=response.status_code, content=response.json())
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
@@ -140,31 +143,34 @@ async def proxy_post_message(project_id: str, request: Request):
     """Proxy chat messages."""
     payload = await request.json()
     target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/messages"
+    headers = {"X-Tenant-ID": request.headers.get("X-Tenant-ID", "")}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(target_url, json=payload, timeout=60.0)
+            response = await client.post(target_url, json=payload, headers=headers, timeout=60.0)
             return JSONResponse(status_code=response.status_code, content=response.json())
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
 @app.post("/api/projects/{project_id}/{action}")
-async def proxy_project_action(project_id: str, action: str):
+async def proxy_project_action(project_id: str, action: str, request: Request):
     """Proxy state transition actions."""
     target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/{action}"
+    headers = {"X-Tenant-ID": request.headers.get("X-Tenant-ID", "")}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(target_url, timeout=60.0)
+            response = await client.post(target_url, headers=headers, timeout=60.0)
             return JSONResponse(status_code=response.status_code, content=response.json())
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
 @app.get("/api/projects/{project_id}/tasks")
-async def proxy_get_tasks(project_id: str):
+async def proxy_get_tasks(project_id: str, request: Request):
     """Proxy fetching project tasks."""
     target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/tasks"
+    headers = {"X-Tenant-ID": request.headers.get("X-Tenant-ID", "")}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(target_url, timeout=30.0)
+            response = await client.get(target_url, headers=headers, timeout=30.0)
             return JSONResponse(status_code=response.status_code, content=response.json())
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
@@ -172,13 +178,14 @@ async def proxy_get_tasks(project_id: str):
 
 
 @app.patch("/api/projects/{project_id}/tasks/{task_id}")
-async def proxy_update_task(project_id: str, task_id: str, update: TaskUpdateRequest, background_tasks: BackgroundTasks):
+async def proxy_update_task(project_id: str, task_id: str, update: TaskUpdateRequest, background_tasks: BackgroundTasks, request: Request):
     """Proxy task updates."""
     payload = update.model_dump(exclude_unset=True)
     target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/tasks/{task_id}"
+    headers = {"X-Tenant-ID": request.headers.get("X-Tenant-ID", "")}
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.patch(target_url, json=payload, timeout=30.0)
+            response = await client.patch(target_url, json=payload, headers=headers, timeout=30.0)
             
             # The chatbot node handles triggering QC internally, so we don't do it here.
             return JSONResponse(status_code=response.status_code, content=response.json())
