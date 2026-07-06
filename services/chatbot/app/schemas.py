@@ -46,6 +46,17 @@ class User(BaseTenantModel):
     avatar_url: Optional[str] = None
     role: Literal["CLIENT", "MANAGER"] = "CLIENT"
 
+class ProjectCreate(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    status: str = "listening"
+    sprint: Optional[str] = None
+    progress: int = 0
+    due_date: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    accent_color: str = "#5B4EFF"
+
 class Project(BaseTenantModel):
     id: str
     name: str

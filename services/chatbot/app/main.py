@@ -21,7 +21,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .database import init_db, get_db, TaskDb, UserDb, ProjectDb, TenantDb, task_dependencies_association, engine, DATABASE_URL
-from .schemas import Task, TaskStatus, TaskPriority, Project
+from .schemas import (
+    Project,
+    ProjectCreate,
+    Task,
+    TaskStatus,
+    TaskPriority,
+    BlastRadiusOutput,
+    PMOutput,
+    ProjectPlanCommand,
+    Requirement,
+    Message,
+    User
+)
 from .graph import workflow, ProjectState, get_llm_model, invoke_llm, get_workspace_dir
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -353,7 +365,7 @@ async def list_projects(
 
 @app.post("/api/projects", response_model=Project)
 async def create_project(
-    project: Project,
+    project: ProjectCreate,
     db: Session = Depends(get_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
 ):
