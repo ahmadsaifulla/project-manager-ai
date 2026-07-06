@@ -6,6 +6,7 @@ from enum import Enum
 from typing import List, Optional, Annotated, Literal, Union
 from typing_extensions import TypedDict
 from pydantic import BaseModel, Field
+from uuid import UUID
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 
@@ -29,7 +30,16 @@ class TaskPriority(str, Enum):
 
 # ─── Data Models ──────────────────────────────────────────────────────────
 
-class Project(BaseModel):
+
+class BaseTenantModel(BaseModel):
+    tenant_id: UUID
+
+class Tenant(BaseModel):
+    id: UUID
+    name: str
+    subscription_tier: str
+
+class Project(BaseTenantModel):
     id: str
     name: str
     description: Optional[str] = None
@@ -43,7 +53,7 @@ class Project(BaseModel):
 
 # ─── Task Model (Used in both LangGraph state and DB persistence) ───────────
 
-class Task(BaseModel):
+class Task(BaseTenantModel):
     id: str = Field(description="Unique task identifier, e.g., 'TSK-001'")
     title: str = Field(description="Brief title of the task")
     description: str = Field(description="Detailed scope of the work")
@@ -54,6 +64,17 @@ class Task(BaseModel):
     dependencies: List[str] = Field(default_factory=list, description="IDs of tasks that must complete first")
     evaluation_feedback: Optional[str] = Field(default=None, description="Feedback from QC/QA")
 
+
+
+class Requirement(BaseTenantModel):
+    id: str
+    title: str
+    description: str
+
+class Message(BaseTenantModel):
+    id: str
+    role: str
+    content: str
 
 # ─── LLM Structured Output Schemas ─────────────────────────────────────────
 
