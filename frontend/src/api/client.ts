@@ -1,12 +1,9 @@
 export const apiClient = async (url: string, options: RequestInit = {}) => {
-  const defaultTenantId = "38ae0b79-3f96-4e4f-bf29-d2e2d74347ae";
-  let tenantId = localStorage.getItem("tenant_id");
-  if (!tenantId || tenantId === "null" || tenantId === "undefined" || tenantId.trim() === "") {
-    tenantId = defaultTenantId;
-  }
-
-  const headers = new Headers(options.headers);
-  headers.set("X-Tenant-ID", tenantId);
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Tenant-ID': '38ae0b79-3f96-4e4f-bf29-d2e2d74347ae',
+    ...options.headers,
+  };
 
   const response = await fetch(url, { ...options, headers });
 
