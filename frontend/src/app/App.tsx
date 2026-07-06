@@ -215,6 +215,13 @@ function KanbanTaskCard({
         <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{task.description}</p>
       </div>
 
+      {task.evaluation_feedback && (
+        <div className="mt-3 p-3 bg-red-50 border-l-4 border-red-500 rounded-r text-sm text-red-900">
+          <strong>QC Rejection: </strong>
+          {task.evaluation_feedback}
+        </div>
+      )}
+
       {/* Footer: assignee + QC button */}
       <div className="flex items-center justify-between pt-1 border-t border-border/60">
         <div className="flex items-center gap-1.5">
