@@ -529,24 +529,49 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     for c in result.commands:
         logger.info(f"Command: {c.command_type}")
 
-    # ── Phase 2: Command Executor Loop ───────────────────────────────
+    # ── Phase 2: Command Executor Loop (Idempotent Upsert) ───────────
     db = SessionLocal()
     try:
         for cmd in result.commands:
             if cmd.command_type == "CREATE":
-                new_uuid = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
-                db_t = TaskDb(
-                    id=new_uuid,
-                    project_id=project_id,
-                    title=cmd.title,
-                    description=cmd.description,
-                    status=TaskStatus.TODO,
-                    assignee=None,
-                    priority=cmd.priority,
-                    estimated_effort="TBD",
+                # ── Idempotent lookup: check if a task with the same title
+                # already exists for this project. If it does, treat this as an
+                # UPDATE so we preserve its UUID and status (especially IN_PROGRESS).
+                title_match = (
+                    db.query(TaskDb)
+                    .filter(
+                        TaskDb.project_id == project_id,
+                        TaskDb.title == cmd.title,
+                    )
+                    .first()
                 )
-                db.add(db_t)
-                logger.info(f"[CQRS] Created task {new_uuid}: {cmd.title}")
+
+                if title_match:
+                    # ── UPSERT: task already exists — update non-status fields,
+                    #    preserve UUID, status, assignee, and evaluation_feedback.
+                    if cmd.description is not None:
+                        title_match.description = cmd.description
+                    if cmd.priority is not None:
+                        title_match.priority = cmd.priority
+                    logger.info(
+                        f"[CQRS] CREATE→UPDATE (idempotent) task {title_match.id}: '{cmd.title}' "
+                        f"(status preserved: {title_match.status.value})"
+                    )
+                else:
+                    # ── INSERT: genuinely new task.
+                    new_uuid = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
+                    db_t = TaskDb(
+                        id=new_uuid,
+                        project_id=project_id,
+                        title=cmd.title,
+                        description=cmd.description,
+                        status=TaskStatus.TODO,
+                        assignee=None,
+                        priority=cmd.priority,
+                        estimated_effort="TBD",
+                    )
+                    db.add(db_t)
+                    logger.info(f"[CQRS] Created new task {new_uuid}: '{cmd.title}'")
 
             elif cmd.command_type == "UPDATE":
                 existing_row = db.query(TaskDb).filter(TaskDb.id == cmd.task_id, TaskDb.project_id == project_id).first()
@@ -559,15 +584,22 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
                         existing_row.status = cmd.status
                     logger.info(f"[CQRS] Updated task {cmd.task_id}")
                 else:
-                    logger.warning(f"[CQRS] Attempted to update non-existent task {cmd.task_id}")
+                    logger.warning(f"[CQRS] Attempted to UPDATE non-existent task_id='{cmd.task_id}'")
 
             elif cmd.command_type == "DELETE":
                 existing_row = db.query(TaskDb).filter(TaskDb.id == cmd.task_id, TaskDb.project_id == project_id).first()
                 if existing_row:
+                    row_id = existing_row.id
                     db.delete(existing_row)
-                    logger.info(f"[CQRS] Deleted task {cmd.task_id}")
+                    # Flush immediately so we can confirm the object is expunged
+                    db.flush()
+                    still_exists = db.query(TaskDb).filter(TaskDb.id == row_id).first()
+                    if still_exists:
+                        logger.error(f"[CQRS] DELETE failed — task {row_id} still in session after flush!")
+                    else:
+                        logger.info(f"[CQRS] Deleted task {row_id} (confirmed expunged from session)")
                 else:
-                    logger.warning(f"[CQRS] Attempted to delete non-existent task {cmd.task_id}")
+                    logger.warning(f"[CQRS] Attempted to DELETE non-existent task_id='{cmd.task_id}'")
 
         db.commit()
         
