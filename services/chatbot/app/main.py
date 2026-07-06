@@ -6,6 +6,7 @@ import os
 import re
 import logging
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 from datetime import datetime, UTC
@@ -19,7 +20,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 load_dotenv()
 
-from .database import init_db, get_db, TaskDb, UserDb, ProjectDb, task_dependencies_association, engine, DATABASE_URL
+from .database import init_db, get_db, TaskDb, UserDb, ProjectDb, TenantDb, task_dependencies_association, engine, DATABASE_URL
 from .schemas import Task, TaskStatus, TaskPriority, Project
 from .graph import workflow, ProjectState, get_llm_model, invoke_llm, get_workspace_dir
 from psycopg_pool import AsyncConnectionPool
@@ -260,20 +261,65 @@ async def get_project_state(project_id: str) -> Dict[str, Any]:
     return state_snap.values
 
 
+# ─── Tenant Authentication Dependency ────────────────────────────────────
+
+async def get_current_tenant_id(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> UUID:
+    """
+    Extracts and validates the tenant identity from the X-Tenant-ID request header.
+    Returns the tenant's UUID if valid; raises 401/404 otherwise.
+
+    Contract (ADR-0003 / Double-Gate Strategy):
+    - Header: X-Tenant-ID must be a valid UUID present in TenantDb.
+    - On failure: 401 Unauthorized (missing) or 404 Not Found (unknown tenant).
+    """
+    tenant_id_raw = request.headers.get("X-Tenant-ID")
+    if not tenant_id_raw:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing X-Tenant-ID header. Tenant authentication is required.",
+        )
+    try:
+        tenant_uuid = UUID(tenant_id_raw)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="X-Tenant-ID is not a valid UUID.",
+        )
+    tenant = db.query(TenantDb).filter(TenantDb.id == tenant_uuid).first()
+    if not tenant:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Tenant '{tenant_id_raw}' not found.",
+        )
+    logger.info(f"[TenantGate] Authenticated tenant: {tenant.id} ({tenant.name})")
+    return tenant.id
+
+
 # ─── API Endpoints ────────────────────────────────────────────────────────
 
 @app.get("/api/projects", response_model=List[Project])
-async def list_projects(db: Session = Depends(get_db)):
-    """List all projects in the database."""
-    projects = db.query(ProjectDb).all()
+async def list_projects(
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
+    """List all projects scoped to the authenticated tenant."""
+    projects = db.query(ProjectDb).filter(ProjectDb.tenant_id == tenant_id).all()
     return projects
 
 
 @app.post("/api/projects", response_model=Project)
-async def create_project(project: Project, db: Session = Depends(get_db)):
-    """Create a new project in the database."""
+async def create_project(
+    project: Project,
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
+    """Create a new project scoped to the authenticated tenant."""
     db_project = ProjectDb(
         id=project.id,
+        tenant_id=tenant_id,
         name=project.name,
         description=project.description,
         status=project.status,
@@ -303,10 +349,19 @@ async def create_project(project: Project, db: Session = Depends(get_db)):
 
 
 @app.get("/api/projects/{project_id}")
-async def get_project(project_id: str, db: Session = Depends(get_db)):
-    """Fetch the current project state, merging DB metadata with LangGraph state."""
-    db_project = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+async def get_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
+    """Fetch project state, scoped to authenticated tenant to prevent cross-tenant leakage."""
+    db_project = (
+        db.query(ProjectDb)
+        .filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id)
+        .first()
+    )
     if not db_project:
+        # Return 404 (not 403) to avoid leaking whether the project exists under another tenant
         raise HTTPException(status_code=404, detail="Project not found")
 
     state = await get_project_state(project_id)
@@ -328,9 +383,17 @@ async def get_project(project_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/projects/{project_id}/messages")
-async def post_message(project_id: str, payload: Dict[str, str] = Body(...)):
-    """Send a user message and invoke the LangGraph flow."""
+async def post_message(
+    project_id: str,
+    payload: Dict[str, str] = Body(...),
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
+    """Send a user message, first asserting tenant ownership of the project."""
     user_content = payload.get("content", "").strip()
+    # Tenant gate: ensure this project belongs to the calling tenant
+    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+        raise HTTPException(status_code=404, detail="Project not found")
     if not user_content:
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
 
@@ -344,9 +407,15 @@ async def post_message(project_id: str, payload: Dict[str, str] = Body(...)):
 
 
 @app.post("/api/projects/{project_id}/finish-sharing")
-async def finish_sharing(project_id: str):
+async def finish_sharing(
+    project_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
     """Transition from listening phase to stress_testing phase."""
     config = {"configurable": {"thread_id": project_id}}
+    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+        raise HTTPException(status_code=404, detail="Project not found")
     state = await get_project_state(project_id)
 
     if state.get("elicitation_phase") != "listening":
@@ -362,9 +431,16 @@ async def finish_sharing(project_id: str):
 
 
 @app.post("/api/projects/{project_id}/approve-goals")
-async def approve_goals(project_id: str, background_tasks: BackgroundTasks):
+async def approve_goals(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
     """Approve goals, trigger task generation, and persist tasks to the database."""
     config = {"configurable": {"thread_id": project_id}}
+    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+        raise HTTPException(status_code=404, detail="Project not found")
     state = await get_project_state(project_id)
 
     if state.get("goals_approved"):
@@ -409,9 +485,15 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks):
 
 
 @app.post("/api/projects/{project_id}/reject-goals")
-async def reject_goals(project_id: str):
+async def reject_goals(
+    project_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
     """Reject goals and loop back to the elicitation conversation."""
     config = {"configurable": {"thread_id": project_id}}
+    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+        raise HTTPException(status_code=404, detail="Project not found")
     state = await get_project_state(project_id)
 
     if state.get("goals_approved"):
@@ -436,9 +518,15 @@ async def reject_goals(project_id: str):
 
 
 @app.post("/api/projects/{project_id}/unlock-requirements")
-async def unlock_requirements(project_id: str, db: Session = Depends(get_db)):
+async def unlock_requirements(
+    project_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
     """Reset back to listening phase, allowing the user to add more requirements."""
     config = {"configurable": {"thread_id": project_id}}
+    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+        raise HTTPException(status_code=404, detail="Project not found")
     await get_project_state(project_id)
 
     # Remove persisted tasks for this project
@@ -506,7 +594,17 @@ async def trigger_qc_node(task_id: str, repo_name: str, branch_name: str, task_t
 
 
 @app.patch("/api/projects/{project_id}/tasks/{task_id}")
-async def update_project_task(project_id: str, task_id: str, payload: TaskUpdateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def update_project_task(
+    project_id: str,
+    task_id: str,
+    payload: TaskUpdateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
+    # Verify project belongs to tenant before allowing task mutation
+    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+        raise HTTPException(status_code=404, detail="Project not found")
     task = db.query(TaskDb).filter(TaskDb.id == task_id, TaskDb.project_id == project_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -529,8 +627,14 @@ async def update_project_task(project_id: str, task_id: str, payload: TaskUpdate
 
 
 @app.get("/api/projects/{project_id}/tasks")
-async def get_project_tasks(project_id: str, db: Session = Depends(get_db)):
-    """Fetch persisted tasks for a project from the database."""
+async def get_project_tasks(
+    project_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: UUID = Depends(get_current_tenant_id),
+):
+    """Fetch persisted tasks for a project, asserting tenant ownership first."""
+    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+        raise HTTPException(status_code=404, detail="Project not found")
     tasks = db.query(TaskDb).filter(TaskDb.project_id == project_id).all()
     results = []
     for t in tasks:
