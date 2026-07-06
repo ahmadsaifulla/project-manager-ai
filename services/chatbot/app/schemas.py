@@ -3,7 +3,7 @@ Pydantic models, enums, and LangGraph state definition for the AI Project Manage
 Fully generic — no hardcoded domains.
 """
 from enum import Enum
-from typing import List, Optional, Annotated
+from typing import List, Optional, Annotated, Literal, Union
 from typing_extensions import TypedDict
 from pydantic import BaseModel, Field
 from langchain_core.messages import BaseMessage
@@ -93,22 +93,34 @@ class PMOutput(BaseModel):
     )
 
 
-class TaskModel(BaseModel):
-    """Individual task output from the task planner LLM."""
-    id: str = Field(..., description="The exact existing UUID string provided in the context. If and ONLY if you are creating a completely new task that does not exist in the context, you must set this field to the literal string 'NEW'.")
-    ref_id: int = Field(description="A unique temporary integer for this task (e.g., 1, 2, 3). Used only for dependency mapping.")
-    title: str = Field(default="Untitled Task", description="Brief title of the task")
-    description: str = Field(default="", description="Detailed scope of the work")
-    priority: str = Field(default="medium", description="low, medium, high, or critical")
-    estimated_effort: str = Field(default="TBD", description="Estimated effort, e.g. '6 hours', '3 days'")
-    dependencies: List[int] = Field(default_factory=list, description="List of ref_id integers this task depends on. Must form an acyclic graph.")
+class CreateCommand(BaseModel):
+    command_type: Literal["CREATE"] = "CREATE"
+    title: str = Field(description="Brief title of the task")
+    description: str = Field(description="Detailed scope of the work")
+    priority: TaskPriority = Field(description="Priority level of the task")
 
 
-class PlanTasksOutput(BaseModel):
-    """Structured output from the task planner agent."""
+class UpdateCommand(BaseModel):
+    command_type: Literal["UPDATE"] = "UPDATE"
+    task_id: str = Field(description="The UUID of the existing task to update")
+    title: Optional[str] = Field(default=None, description="Updated title")
+    description: Optional[str] = Field(default=None, description="Updated description")
+    status: Optional[TaskStatus] = Field(default=None, description="Updated status")
+
+
+class DeleteCommand(BaseModel):
+    command_type: Literal["DELETE"] = "DELETE"
+    task_id: str = Field(description="The UUID of the existing task to delete")
+
+
+class ProjectPlanCommand(BaseModel):
+    """Structured output from the task planner agent acting as an Event Emitter."""
     prd: str = Field(default="", description="The formalized Product Requirements Document in markdown format.")
     technical_spec: str = Field(default="", description="The formal Technical Specification document in markdown format.")
-    tasks: List[TaskModel] = Field(default_factory=list, description="Structured developer tasks mapping to the approved requirements summary.")
+    commands: List[Union[CreateCommand, UpdateCommand, DeleteCommand]] = Field(
+        default_factory=list, 
+        description="A sequential list of atomic commands to mutate the task state."
+    )
 
 
 # ─── LangGraph State Definition ────────────────────────────────────────────
