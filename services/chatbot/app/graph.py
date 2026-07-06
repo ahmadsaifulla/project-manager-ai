@@ -159,6 +159,8 @@ This package must include:
 2. A formal Technical Specification document for the engineering team.
 3. A structured, cycle-free list of developer tasks (Directed Acyclic Graph) representing an ordered build plan.
 
+CRITICAL: You must preserve the IDs of all existing tasks. I am providing you with the current task list. If a task is still relevant, you MUST echo its exact ID in your output. Do not generate a new ID for an existing task.
+
 Each task must contain:
 - id: The exact existing UUID string if updating an existing task, or the literal string "NEW" if this is a brand-new task.
 - ref_id: A unique temporary integer starting from 1 (e.g., 1, 2, 3). This is ONLY for dependency mapping.
@@ -533,6 +535,9 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
         db.close()
 
     logger.info(f"[PlanTasks] Found {len(existing_ids)} existing tasks for project {project_id}")
+    logger.info("=== DEBUG: EXISTING TASKS FROM DB ===")
+    for et in existing_db_tasks:
+        logger.info(f"DB Task: {et.id} | Title: {et.title}")
 
     prompt = SYSTEM_PLANNER.format(
         project_goals=goals,
@@ -543,16 +548,29 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     structured_model = model.with_structured_output(PlanTasksOutput)
     result = invoke_llm(structured_model, prompt)
 
+    logger.info("=== DEBUG: LLM OUTPUT TASKS ===")
+    for t in result.tasks:
+        logger.info(f"LLM Task ID: {t.id} | Ref: {t.ref_id} | Title: {t.title}")
+
+    for t in result.tasks:
+        if t.id != "NEW" and t.id not in existing_ids:
+            logger.error(f"[PlanTasks] LLM hallucinated ID {t.id} which is not in existing IDs.")
+            raise ValueError(f"LLM hallucinated task ID '{t.id}'. Must be 'NEW' or an existing ID from the provided list.")
+
     # ── Phase 2: Build ref_id → UUID mapping ──────────────────────────
     # If the LLM returned an existing UUID, reuse it. Otherwise, mint a new one.
     ref_to_uuid: Dict[int, str] = {}
+    logger.info("=== DEBUG: SMART MERGE DECISIONS ===")
     for t in result.tasks:
         if t.id == "NEW" or t.id not in existing_ids:
             # New task — generate a fresh UUID
-            ref_to_uuid[t.ref_id] = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
+            new_uuid = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
+            ref_to_uuid[t.ref_id] = new_uuid
+            logger.info(f"DECISION: NEW TASK | LLM passed '{t.id}' -> Minted new UUID: {new_uuid} | Title: {t.title}")
         else:
             # LLM echoed back a known UUID — reuse it
             ref_to_uuid[t.ref_id] = t.id
+            logger.info(f"DECISION: MATCHED TASK | LLM echoed UUID: {t.id} | Title: {t.title}")
 
     # ── Phase 3: Construct Task objects ───────────────────────────────
     tasks: List[Task] = []
