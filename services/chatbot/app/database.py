@@ -82,6 +82,7 @@ class UserDb(Base):
     email = Column(String(100), unique=True, nullable=False)
     avatar_url = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.now(UTC))
+    role = Column(String(50), nullable=False, default="CLIENT")
 
     tasks = relationship("TaskDb", back_populates="assigned_user")
 

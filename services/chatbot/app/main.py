@@ -212,6 +212,7 @@ async def lifespan(application: FastAPI):
                     name="Developer",
                     email="dev@localhost",
                     avatar_url=None,
+                    role="MANAGER",
                 ),
             ]
             db.add_all(sample_users)
@@ -319,6 +320,23 @@ async def get_current_tenant_id(
         )
     logger.info(f"[TenantGate] Authenticated tenant: {tenant.id} ({tenant.name})")
     return tenant.id
+
+
+# ─── RBAC Authorization Dependency ───────────────────────────────────────
+
+def require_role(required_role: str):
+    def role_checker(
+        request: Request,
+        db: Session = Depends(get_db)
+    ):
+        # Mock get_current_user implementation
+        user = db.query(UserDb).filter(UserDb.id == "usr_default").first()
+        if not user:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        if user.role != required_role:
+            raise HTTPException(status_code=403, detail="Forbidden: Insufficient privileges")
+        return user
+    return role_checker
 
 
 # ─── API Endpoints ────────────────────────────────────────────────────────
@@ -459,6 +477,7 @@ async def approve_goals(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
+    current_user: UserDb = Depends(require_role("MANAGER")),
 ):
     """Approve goals, trigger task generation, and persist tasks to the database."""
     config = {"configurable": {"thread_id": project_id}}
@@ -512,6 +531,7 @@ async def reject_goals(
     project_id: str,
     db: Session = Depends(get_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
+    current_user: UserDb = Depends(require_role("MANAGER")),
 ):
     """Reject goals and loop back to the elicitation conversation."""
     config = {"configurable": {"thread_id": project_id}}
@@ -545,6 +565,7 @@ async def unlock_requirements(
     project_id: str,
     db: Session = Depends(get_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
+    current_user: UserDb = Depends(require_role("MANAGER")),
 ):
     """Reset back to listening phase, allowing the user to add more requirements."""
     config = {"configurable": {"thread_id": project_id}}
@@ -624,6 +645,7 @@ async def update_project_task(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
+    current_user: UserDb = Depends(require_role("MANAGER")),
 ):
     # Verify project belongs to tenant before allowing task mutation
     if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():

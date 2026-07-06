@@ -39,6 +39,13 @@ class Tenant(BaseModel):
     name: str
     subscription_tier: str
 
+class User(BaseTenantModel):
+    id: str
+    name: str
+    email: str
+    avatar_url: Optional[str] = None
+    role: Literal["CLIENT", "MANAGER"] = "CLIENT"
+
 class Project(BaseTenantModel):
     id: str
     name: str
