@@ -24,6 +24,13 @@ class TaskUpdateRequest(BaseModel):
 # Initialize the Master Orchestrator API Gateway
 app = FastAPI(title="Master Orchestrator API Gateway")
 
+def _safe_json_response(response: httpx.Response) -> JSONResponse:
+    try:
+        content = response.json()
+    except Exception:
+        content = {"detail": response.text}
+    return JSONResponse(status_code=response.status_code, content=content)
+
 # Step C: CORS Configuration
 app.add_middleware(
     CORSMiddleware,
@@ -92,7 +99,7 @@ async def proxy_qc_evaluation(request: Request):
         async with httpx.AsyncClient() as client:
             # Forward the request to the developer_node
             response = await client.post(target_url, json=payload, timeout=30.0)
-            return JSONResponse(status_code=response.status_code, content=response.json())
+            return _safe_json_response(response)
     except httpx.RequestError as e:
         logging.error(f"Failed to reach Developer Node at {target_url}: {e}")
         return JSONResponse(
@@ -109,7 +116,7 @@ async def proxy_list_projects(request: Request):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(target_url, headers=headers, timeout=30.0)
-            return JSONResponse(status_code=response.status_code, content=response.json())
+            return _safe_json_response(response)
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
@@ -122,7 +129,7 @@ async def proxy_create_project(project: ProjectCreateRequest, request: Request):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(target_url, json=payload, headers=headers, timeout=30.0)
-            return JSONResponse(status_code=response.status_code, content=response.json())
+            return _safe_json_response(response)
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
@@ -134,7 +141,7 @@ async def proxy_get_project(project_id: str, request: Request):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(target_url, headers=headers, timeout=30.0)
-            return JSONResponse(status_code=response.status_code, content=response.json())
+            return _safe_json_response(response)
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
@@ -147,7 +154,7 @@ async def proxy_post_message(project_id: str, request: Request):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(target_url, json=payload, headers=headers, timeout=60.0)
-            return JSONResponse(status_code=response.status_code, content=response.json())
+            return _safe_json_response(response)
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
@@ -159,7 +166,7 @@ async def proxy_project_action(project_id: str, action: str, request: Request):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(target_url, headers=headers, timeout=60.0)
-            return JSONResponse(status_code=response.status_code, content=response.json())
+            return _safe_json_response(response)
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
@@ -171,7 +178,7 @@ async def proxy_get_tasks(project_id: str, request: Request):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(target_url, headers=headers, timeout=30.0)
-            return JSONResponse(status_code=response.status_code, content=response.json())
+            return _safe_json_response(response)
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
@@ -188,6 +195,6 @@ async def proxy_update_task(project_id: str, task_id: str, update: TaskUpdateReq
             response = await client.patch(target_url, json=payload, headers=headers, timeout=30.0)
             
             # The chatbot node handles triggering QC internally, so we don't do it here.
-            return JSONResponse(status_code=response.status_code, content=response.json())
+            return _safe_json_response(response)
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
