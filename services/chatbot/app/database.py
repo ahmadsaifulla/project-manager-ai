@@ -20,6 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from .schemas import TaskStatus, TaskPriority
 
 
@@ -32,6 +33,18 @@ engine = create_engine(
     connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+if "sqlite" in DATABASE_URL:
+    ASYNC_DATABASE_URL = DATABASE_URL.replace("sqlite://", "sqlite+aiosqlite://")
+else:
+    ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+
+async_engine = create_async_engine(
+    ASYNC_DATABASE_URL,
+    connect_args={"check_same_thread": False} if "sqlite" in ASYNC_DATABASE_URL else {},
+)
+AsyncSessionLocal = async_sessionmaker(autocommit=False, autoflush=False, bind=async_engine, class_=AsyncSession)
+
 Base = declarative_base()
 
 
@@ -183,3 +196,9 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+async def get_async_db():
+    """Yield an async database session."""
+    async with AsyncSessionLocal() as db:
+        yield db

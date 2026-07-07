@@ -20,7 +20,9 @@ from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 load_dotenv()
 
-from .database import init_db, get_db, TaskDb, UserDb, ProjectDb, TenantDb, task_dependencies_association, engine, DATABASE_URL
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from .database import init_db, get_db, get_async_db, AsyncSessionLocal, TaskDb, UserDb, ProjectDb, TenantDb, task_dependencies_association, engine, DATABASE_URL
 from .schemas import (
     Project,
     ProjectCreate,
@@ -301,7 +303,7 @@ async def get_project_state(project_id: str) -> Dict[str, Any]:
 
 async def get_current_tenant_id(
     request: Request,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> UUID:
     """
     Extracts and validates the tenant identity from the X-Tenant-ID request header.
@@ -324,7 +326,8 @@ async def get_current_tenant_id(
             status_code=400,
             detail="X-Tenant-ID is not a valid UUID.",
         )
-    tenant = db.query(TenantDb).filter(TenantDb.id == tenant_uuid).first()
+    result = await db.execute(select(TenantDb).where(TenantDb.id == tenant_uuid))
+    tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(
             status_code=404,
@@ -337,12 +340,13 @@ async def get_current_tenant_id(
 # ─── RBAC Authorization Dependency ───────────────────────────────────────
 
 def require_role(required_role: str):
-    def role_checker(
+    async def role_checker(
         request: Request,
-        db: Session = Depends(get_db)
+        db: AsyncSession = Depends(get_async_db)
     ):
         # Mock get_current_user implementation
-        user = db.query(UserDb).filter(UserDb.id == "usr_default").first()
+        result = await db.execute(select(UserDb).where(UserDb.id == "usr_default"))
+        user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
         if user.role != required_role:
@@ -355,18 +359,19 @@ def require_role(required_role: str):
 
 @app.get("/api/projects", response_model=List[Project])
 async def list_projects(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
 ):
     """List all projects scoped to the authenticated tenant."""
-    projects = db.query(ProjectDb).filter(ProjectDb.tenant_id == tenant_id).all()
+    result = await db.execute(select(ProjectDb).where(ProjectDb.tenant_id == tenant_id))
+    projects = result.scalars().all()
     return projects
 
 
 @app.post("/api/projects", response_model=Project)
 async def create_project(
     project: ProjectCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
 ):
     """Create a new project scoped to the authenticated tenant."""
@@ -383,8 +388,8 @@ async def create_project(
         accent_color=project.accent_color
     )
     db.add(db_project)
-    db.commit()
-    db.refresh(db_project)
+    await db.commit()
+    await db.refresh(db_project)
 
     # Create boilerplate files for the developer node
     import os
@@ -404,15 +409,12 @@ async def create_project(
 @app.get("/api/projects/{project_id}")
 async def get_project(
     project_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
 ):
     """Fetch project state, scoped to authenticated tenant to prevent cross-tenant leakage."""
-    db_project = (
-        db.query(ProjectDb)
-        .filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id)
-        .first()
-    )
+    result = await db.execute(select(ProjectDb).where(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id))
+    db_project = result.scalar_one_or_none()
     if not db_project:
         # Return 404 (not 403) to avoid leaking whether the project exists under another tenant
         raise HTTPException(status_code=404, detail="Project not found")
@@ -439,13 +441,14 @@ async def get_project(
 async def post_message(
     project_id: str,
     payload: Dict[str, str] = Body(...),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
 ):
     """Send a user message, first asserting tenant ownership of the project."""
     user_content = payload.get("content", "").strip()
     # Tenant gate: ensure this project belongs to the calling tenant
-    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+    result = await db.execute(select(ProjectDb).where(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id))
+    if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
     if not user_content:
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
@@ -462,12 +465,13 @@ async def post_message(
 @app.post("/api/projects/{project_id}/finish-sharing")
 async def finish_sharing(
     project_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
 ):
     """Transition from listening phase to stress_testing phase."""
     config = {"configurable": {"thread_id": project_id}}
-    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+    result = await db.execute(select(ProjectDb).where(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id))
+    if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
     state = await get_project_state(project_id)
 
@@ -487,13 +491,14 @@ async def finish_sharing(
 async def approve_goals(
     project_id: str,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
     current_user: UserDb = Depends(require_role("MANAGER")),
 ):
     """Approve goals, trigger task generation, and persist tasks to the database."""
     config = {"configurable": {"thread_id": project_id}}
-    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+    result = await db.execute(select(ProjectDb).where(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id))
+    if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
     state = await get_project_state(project_id)
 
@@ -541,13 +546,14 @@ async def approve_goals(
 @app.post("/api/projects/{project_id}/reject-goals")
 async def reject_goals(
     project_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
     current_user: UserDb = Depends(require_role("MANAGER")),
 ):
     """Reject goals and loop back to the elicitation conversation."""
     config = {"configurable": {"thread_id": project_id}}
-    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+    result = await db.execute(select(ProjectDb).where(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id))
+    if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
     state = await get_project_state(project_id)
 
@@ -575,27 +581,30 @@ async def reject_goals(
 @app.post("/api/projects/{project_id}/unlock-requirements")
 async def unlock_requirements(
     project_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
     current_user: UserDb = Depends(require_role("MANAGER")),
 ):
     """Reset back to listening phase, allowing the user to add more requirements."""
     config = {"configurable": {"thread_id": project_id}}
-    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+    result = await db.execute(select(ProjectDb).where(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id))
+    if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
     await get_project_state(project_id)
 
     # Remove persisted tasks for this project
-    db.execute(
+    await db.execute(
         task_dependencies_association.delete().where(
             task_dependencies_association.c.task_id.in_(
-                db.query(TaskDb.id).filter(TaskDb.project_id == project_id)
+                select(TaskDb.id).where(TaskDb.project_id == project_id)
             )
         )
     )
-    db.commit()
-    db.query(TaskDb).filter(TaskDb.project_id == project_id).delete()
-    db.commit()
+    await db.commit()
+    
+    from sqlalchemy import delete
+    await db.execute(delete(TaskDb).where(TaskDb.project_id == project_id))
+    await db.commit()
 
     # Revert to listening phase
     await app_graph.aupdate_state(
@@ -635,16 +644,16 @@ async def trigger_qc_node(task_id: str, repo_name: str, branch_name: str, task_t
                 verdict = result.get("verdict")
                 feedback = result.get("feedback")
                 
-                db = next(get_db())
-                db_task = db.query(TaskDb).filter(TaskDb.id == task_id).first()
-                if db_task:
-                    if verdict:
-                        db_task.status = TaskStatus.IN_QA
-                    else:
-                        db_task.status = TaskStatus.REJECTED
-                    db_task.evaluation_feedback = feedback
-                    db.commit()
-                db.close()
+                async with AsyncSessionLocal() as db:
+                    result_task = await db.execute(select(TaskDb).where(TaskDb.id == task_id))
+                    db_task = result_task.scalar_one_or_none()
+                    if db_task:
+                        if verdict:
+                            db_task.status = TaskStatus.IN_QA
+                        else:
+                            db_task.status = TaskStatus.REJECTED
+                        db_task.evaluation_feedback = feedback
+                        await db.commit()
     except Exception as e:
         logger.error(f"Failed to trigger QC node: {e}")
 
@@ -655,14 +664,17 @@ async def update_project_task(
     task_id: str,
     payload: TaskUpdateRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
     current_user: UserDb = Depends(require_role("MANAGER")),
 ):
     # Verify project belongs to tenant before allowing task mutation
-    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+    result_proj = await db.execute(select(ProjectDb).where(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id))
+    if not result_proj.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
-    task = db.query(TaskDb).filter(TaskDb.id == task_id, TaskDb.project_id == project_id).first()
+        
+    result_task = await db.execute(select(TaskDb).where(TaskDb.id == task_id, TaskDb.project_id == project_id))
+    task = result_task.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
         
@@ -674,8 +686,8 @@ async def update_project_task(
     if payload.assignee is not None:
         task.assignee = payload.assignee
         
-    db.commit()
-    db.refresh(task)
+    await db.commit()
+    await db.refresh(task)
     
     if task.status == TaskStatus.IN_QC:
         background_tasks.add_task(trigger_qc_node, task.id, "mock-repo", "mock-branch", task.title, task.description)
@@ -686,13 +698,15 @@ async def update_project_task(
 @app.get("/api/projects/{project_id}/tasks")
 async def get_project_tasks(
     project_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     tenant_id: UUID = Depends(get_current_tenant_id),
 ):
     """Fetch persisted tasks for a project, asserting tenant ownership first."""
-    if not db.query(ProjectDb).filter(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id).first():
+    result_proj = await db.execute(select(ProjectDb).where(ProjectDb.id == project_id, ProjectDb.tenant_id == tenant_id))
+    if not result_proj.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
-    tasks = db.query(TaskDb).filter(TaskDb.project_id == project_id).all()
+    result_tasks = await db.execute(select(TaskDb).where(TaskDb.project_id == project_id))
+    tasks = result_tasks.scalars().all()
     results = []
     for t in tasks:
         results.append(
@@ -712,9 +726,10 @@ async def get_project_tasks(
 
 
 @app.get("/api/users")
-def get_users(db: Session = Depends(get_db)):
+async def get_users(db: AsyncSession = Depends(get_async_db)):
     """Fetch all registered users."""
-    users = db.query(UserDb).all()
+    result = await db.execute(select(UserDb))
+    users = result.scalars().all()
     return [
         {"id": u.id, "name": u.name, "email": u.email, "avatar_url": u.avatar_url}
         for u in users
