@@ -392,8 +392,10 @@ def run_public_conversational_pass(
 
         # Persist updated draft user stories
         if result and getattr(result, "updated_draft_user_stories", None):
+            stories_list = result.updated_draft_user_stories
+            markdown_stories = "\n\n".join([f"- {story}" for story in stories_list])
             with open(draft_path, "w", encoding="utf-8") as f:
-                f.write(result.updated_draft_user_stories)
+                f.write(markdown_stories)
 
         return result
     except Exception as e:
@@ -407,7 +409,7 @@ def run_public_conversational_pass(
             detected_gaps=["System Error: Unable to process requirements."],
             next_question=next_q,
             project_goals="None",
-            updated_draft_user_stories=""
+            updated_draft_user_stories=[]
         )
 
 

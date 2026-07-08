@@ -79,9 +79,9 @@ class PMOutput(BaseModel):
         default="None",
         description="Compiled goals summary formatted strictly under exactly three headers: '### What We Have Done / Finalized', '### What Needs to Be Done / Next Steps', and '### What to Update'. Use the value 'None' if a heading has no content."
     )
-    updated_draft_user_stories: str = Field(
-        default="",
-        description="Complete, updated text of DRAFT_USER_STORIES.md, appending newly confirmed requirements systematically. A maximum of 5 distinct, high-level user stories. Do not iterate. Do not repeat."
+    updated_draft_user_stories: List[str] = Field(
+        default_factory=list,
+        description="A list of a maximum of 5 distinct, high-level user stories. Each item in the list must be a single sentence."
     )
 
 

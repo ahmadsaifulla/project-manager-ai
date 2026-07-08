@@ -553,12 +553,14 @@ async def unlock_requirements(project_id: str, db: Session = Depends(get_db)):
 class TaskUpdateRequest(BaseModel):
     status: str | None = None
     assignee: str | None = None
+    evaluation_feedback: str | None = None
 
-async def trigger_qc_node(task_id: str, repo_name: str, branch_name: str):
+async def trigger_qc_node(task_id: str, repo_name: str, branch_name: str, project_id: str):
     try:
         target_url = "http://127.0.0.1:8000/api/qc/evaluate"
         payload = {
             "task_id": task_id,
+            "project_id": project_id,
             "repo_name": repo_name,
             "branch_name": branch_name
         }
@@ -596,12 +598,14 @@ async def update_project_task(project_id: str, task_id: str, payload: TaskUpdate
             raise HTTPException(status_code=400, detail="Invalid status")
     if payload.assignee is not None:
         task.assignee = payload.assignee
+    if payload.evaluation_feedback is not None:
+        task.evaluation_feedback = payload.evaluation_feedback
         
     db.commit()
     db.refresh(task)
     
     if task.status == TaskStatus.IN_QC:
-        background_tasks.add_task(trigger_qc_node, task.id, "mock-repo", "mock-branch")
+        background_tasks.add_task(trigger_qc_node, task.id, "mock-repo", "mock-branch", project_id)
         
     return {"status": "success", "task": {"id": task.id, "status": task.status.value, "evaluation_feedback": task.evaluation_feedback}}
 
