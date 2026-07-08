@@ -328,8 +328,12 @@ async def get_project(project_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/projects/{project_id}/messages")
-async def post_message(project_id: str, payload: Dict[str, str] = Body(...)):
+async def post_message(project_id: str, payload: Dict[str, str] = Body(...), db: Session = Depends(get_db)):
     """Send a user message and invoke the LangGraph flow."""
+    db_project = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     user_content = payload.get("content", "").strip()
     if not user_content:
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
@@ -344,8 +348,12 @@ async def post_message(project_id: str, payload: Dict[str, str] = Body(...)):
 
 
 @app.post("/api/projects/{project_id}/finish-sharing")
-async def finish_sharing(project_id: str):
+async def finish_sharing(project_id: str, db: Session = Depends(get_db)):
     """Transition from listening phase to stress_testing phase."""
+    db_project = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     config = {"configurable": {"thread_id": project_id}}
     state = await get_project_state(project_id)
 
@@ -362,8 +370,12 @@ async def finish_sharing(project_id: str):
 
 
 @app.post("/api/projects/{project_id}/approve-goals")
-async def approve_goals(project_id: str, background_tasks: BackgroundTasks):
+async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Approve goals, trigger task generation, and persist tasks to the database."""
+    db_project = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     config = {"configurable": {"thread_id": project_id}}
     state = await get_project_state(project_id)
 
@@ -409,8 +421,12 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks):
 
 
 @app.post("/api/projects/{project_id}/reject-goals")
-async def reject_goals(project_id: str):
+async def reject_goals(project_id: str, db: Session = Depends(get_db)):
     """Reject goals and loop back to the elicitation conversation."""
+    db_project = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     config = {"configurable": {"thread_id": project_id}}
     state = await get_project_state(project_id)
 
@@ -438,31 +454,22 @@ async def reject_goals(project_id: str):
 @app.post("/api/projects/{project_id}/unlock-requirements")
 async def unlock_requirements(project_id: str, db: Session = Depends(get_db)):
     """Reset back to listening phase, allowing the user to add more requirements."""
+    db_project = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     config = {"configurable": {"thread_id": project_id}}
     await get_project_state(project_id)
 
-    # Remove persisted tasks for this project
-    db.execute(
-        task_dependencies_association.delete().where(
-            task_dependencies_association.c.task_id.in_(
-                db.query(TaskDb.id).filter(TaskDb.project_id == project_id)
-            )
-        )
-    )
-    db.commit()
-    db.query(TaskDb).filter(TaskDb.project_id == project_id).delete()
-    db.commit()
-
-    # Revert to listening phase
+    # Do NOT remove persisted tasks; we will use Smart Merge to upsert/append
+    
+    # Revert to listening phase but retain historical tasks, gaps, and clarifications
     await app_graph.aupdate_state(
         config,
         {
             "goals_approved": False,
             "elicitation_phase": "listening",
             "current_focus": "idle",
-            "tasks": [],
-            "detected_gaps": [],
-            "clarification_questions": [],
         },
         as_node="elicit_goals",
     )

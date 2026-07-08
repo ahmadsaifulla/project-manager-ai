@@ -67,6 +67,7 @@ def get_llm_model():
         model="llama-3.3-70b-versatile",
         temperature=0.1,
         max_retries=2,
+        max_tokens=4000,
     )
 
 
@@ -148,6 +149,8 @@ Architect Notes (TEMP_ARCHITECT.md):
 Current DRAFT_USER_STORIES.md:
 {draft_user_stories}
 
+CRITICAL MERGE INSTRUCTIONS: If a PRD, Technical Spec, or Task List already exists in the provided context, you must act as an editor. Do not rewrite them from scratch. Append and integrate the new requirements into the existing PRD. Only generate NEW tasks required to fulfill the new requirements; do not regenerate tasks that already exist in the state.
+
 CRITICAL: You must return valid JSON matching the exact schema."""
 
 SYSTEM_PLANNER = """You are the final translation and packaging agent.
@@ -169,6 +172,8 @@ You are completely generic — generate tasks appropriate for whatever project t
 
 Approved Project Goals:
 {project_goals}
+
+CRITICAL MERGE INSTRUCTIONS: If a PRD, Technical Spec, or Task List already exists in the provided context, you must act as an editor. Do not rewrite them from scratch. Append and integrate the new requirements into the existing PRD. Only generate NEW tasks required to fulfill the new requirements; do not regenerate tasks that already exist in the state.
 
 CRITICAL: You must return valid JSON matching the exact schema."""
 
@@ -323,9 +328,13 @@ def run_hidden_backend_pass(user_request: str, affected_layers: List[str], proje
         user_request=user_request or "None (initial check)",
     )
 
-    model = get_llm_model()
-    response = invoke_llm(model, prompt)
-    assessment = response.content
+    try:
+        model = get_llm_model()
+        response = invoke_llm(model, prompt)
+        assessment = response.content
+    except Exception as e:
+        logger.error(f"[Architect Pass] Error: {e}")
+        assessment = "Architect check failed. Proceeding with caution."
 
     # Write assessment to TEMP_ARCHITECT.md (or configured file)
     arch_file = os.getenv("ARCHITECT_FILE", "TEMP_ARCHITECT.md")
@@ -375,14 +384,23 @@ def run_public_conversational_pass(
         },
     ]
 
-    result = invoke_llm(structured_model, llm_input)
+    try:
+        result = invoke_llm(structured_model, llm_input)
 
-    # Persist updated draft user stories
-    if result.updated_draft_user_stories:
-        with open(draft_path, "w", encoding="utf-8") as f:
-            f.write(result.updated_draft_user_stories)
+        # Persist updated draft user stories
+        if result and getattr(result, "updated_draft_user_stories", None):
+            with open(draft_path, "w", encoding="utf-8") as f:
+                f.write(result.updated_draft_user_stories)
 
-    return result
+        return result
+    except Exception as e:
+        logger.error(f"[PM Pass] Error: {e}")
+        return PMOutput(
+            detected_gaps=["System Error: Unable to process requirements."],
+            next_question="I'm having trouble processing that right now. Could you please rephrase?",
+            project_goals="None",
+            updated_draft_user_stories=""
+        )
 
 
 # ─── Graph Nodes ───────────────────────────────────────────────────────────
@@ -523,7 +541,14 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
 
     model = get_llm_model()
     structured_model = model.with_structured_output(PlanTasksOutput)
-    result = invoke_llm(structured_model, prompt)
+    
+    try:
+        result = invoke_llm(structured_model, prompt)
+    except Exception as e:
+        logger.error(f"[PlanTasks] Error invoking LLM: {e}")
+        print(f"CRITICAL: Task Generation Failed: {e}")
+        # Return an empty PlanTasksOutput to allow graceful continuation
+        result = PlanTasksOutput(tasks=[])
 
     # ── Phase 2: Build ref_id → UUID mapping ──────────────────────────
     # If the LLM returned an existing UUID, reuse it. Otherwise, mint a new one.
@@ -596,7 +621,12 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
                 # STRICTLY PRESERVED: status, evaluation_feedback, assignee
                 logger.info(f"[SmartMerge] Updated existing task {t.id} (status preserved: {existing_row.status.value})")
             else:
-                # ── INSERT: Brand-new task ──
+                # ── INSERT: Brand-new task (with deduplication) ──
+                duplicate_title = db.query(TaskDb).filter(TaskDb.title == t.title, TaskDb.project_id == project_id).first()
+                if duplicate_title:
+                    logger.info(f"[SmartMerge] Skipped inserting duplicate task title: '{t.title}'")
+                    continue
+
                 db_t = TaskDb(
                     id=t.id,
                     project_id=project_id,
