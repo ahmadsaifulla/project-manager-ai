@@ -5,7 +5,7 @@ export interface Project {
   id: string;
   name: string;
   description: string;
-  status: "listening" | "reviewing" | "approved" | "in-progress";
+  status: "Requirements" | "reviewing" | "Approved" | "in-progress" | string;
   statusLabel?: string;
   sprint?: string;
   progress: number;

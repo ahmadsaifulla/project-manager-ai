@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 
 from .schemas import (
     ProjectState,
@@ -64,7 +65,7 @@ def get_llm_model():
         )
 
     return ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         temperature=0.1,
         max_retries=2,
         max_tokens=4000,
@@ -114,30 +115,23 @@ CRITICAL GUARDRAIL: Do NOT output this engineering jargon to the user. This outp
 CRITICAL: You must return valid JSON matching the exact schema.
 """
 
-SYSTEM_PM = """You are the public-facing Product Manager agent running Step 2 of the Dual-Core Processing Loop.
-You are a perfect requirements engineer with over 30 years of experience. Your client is a "layman" who knows what they want but does NOT understand technical buzzwords, jargon, or terminologies.
+SYSTEM_PM = """YOU ARE CURRENTLY ANALYZING: {user_input}. You must generate user stories and tasks that are strictly derived from this input. DO NOT use generic examples like expense trackers or CRM systems. If the user input is about a game (e.g., Snake), your tasks must be specific to game development (e.g., Grid rendering, Collision detection, Score tracking).
 
-Your role is to read the Architect's technical Friction Stance from TEMP_ARCHITECT.md and translate complex engineering problems into clean product trade-offs (understandable by a 10-year-old).
-You are completely generic and neutral — you handle ANY type of project the user describes (web apps, mobile apps, games, data pipelines, IoT systems, anything). You are NOT hardcoded to any specific domain.
+You are a structured data processor. You must output a JSON object using the PMOutput tool. Do not generate conversational text.
+
+Read the Architect's Friction Stance (TEMP_ARCHITECT.md) and translate complex problems into product trade-offs.
 
 We are currently in the "{elicitation_phase}" phase.
 
-### Phase Control Rules:
 #### PHASE A: "listening"
-- Do NOT say "Welcome" or repeat greetings if there is already a conversation history.
-- Read the conversation history. Acknowledge the user's latest input naturally.
-- Ask ONE relevant follow-up question to draw out more details about their project.
-- Extract high-level requirements and append them systematically to DRAFT_USER_STORIES.md.
-- Do NOT populate detected_gaps or clarification_questions.
-- Conclude your response by asking if they have anything else to add or if we should begin the architectural analysis.
+- Acknowledge the user's input and ask ONE relevant follow-up question.
+- Extract high-level requirements to DRAFT_USER_STORIES.md.
+- Do NOT populate detected_gaps.
 
 #### PHASE B: "stress_testing"
-- Ingest the technical frictions and warnings from the Architect Notes. If the Architect's Friction Stance rejects a feature because it breaks the architecture:
-  1. Translate the rejection into simple, layman-friendly concepts (NO JARGON).
-  2. Collaboratively propose a "better solution" with the client that satisfies both their needs and the Architect's constraints.
-- Analyze the user request against 4 vectors: Core Intent, Data Scope, User Journey, Constraints.
+- Analyze the user request against Core Intent, Data Scope, User Journey, Constraints.
 - Identify requirements gaps and list them in detected_gaps.
-- Ask exactly ONE clear question at a time to prevent cognitive overload.
+- Ask exactly ONE clear question at a time.
 - When all gaps are resolved, set detected_gaps to empty, and format the project goals summary under exactly three headers:
    ### What We Have Done / Finalized
    ### What Needs to Be Done / Next Steps
@@ -149,9 +143,7 @@ Architect Notes (TEMP_ARCHITECT.md):
 Current DRAFT_USER_STORIES.md:
 {draft_user_stories}
 
-CRITICAL MERGE INSTRUCTIONS: If a PRD, Technical Spec, or Task List already exists in the provided context, you must act as an editor. Do not rewrite them from scratch. Append and integrate the new requirements into the existing PRD. Only generate NEW tasks required to fulfill the new requirements; do not regenerate tasks that already exist in the state.
-
-CRITICAL: You must return valid JSON matching the exact schema."""
+Merge Instructions: If a PRD or Task List exists, act as an editor. Append and integrate new requirements. Do not regenerate existing tasks."""
 
 SYSTEM_PLANNER = """You are the final translation and packaging agent.
 Your role is to read the approved project goals and generate a complete "Translation Package" for handoff.
@@ -173,9 +165,9 @@ You are completely generic — generate tasks appropriate for whatever project t
 Approved Project Goals:
 {project_goals}
 
-CRITICAL MERGE INSTRUCTIONS: If a PRD, Technical Spec, or Task List already exists in the provided context, you must act as an editor. Do not rewrite them from scratch. Append and integrate the new requirements into the existing PRD. Only generate NEW tasks required to fulfill the new requirements; do not regenerate tasks that already exist in the state.
+Merge Instructions: If a PRD, Technical Spec, or Task List already exists in the provided context, you must act as an editor. Do not rewrite them from scratch. Append and integrate the new requirements into the existing PRD. Only generate NEW tasks required to fulfill the new requirements; do not regenerate tasks that already exist in the state.
 
-CRITICAL: You must return valid JSON matching the exact schema."""
+Your ONLY output is the JSON object matching the requested schema. Do not output any preamble, markdown headers, or instructional text."""
 
 
 # ─── DAG Validation ───────────────────────────────────────────────────────
@@ -350,6 +342,7 @@ def run_public_conversational_pass(
     architect_notes: str,
     elicitation_phase: str,
     project_id: str,
+    user_input: str,
 ) -> PMOutput:
     """
     Step 2: The Public Product Manager Pass.
@@ -367,10 +360,11 @@ def run_public_conversational_pass(
         elicitation_phase=elicitation_phase,
         architect_notes=architect_notes,
         draft_user_stories=draft_content,
+        user_input=user_input,
     )
 
     model = get_llm_model()
-    structured_model = model.with_structured_output(PMOutput)
+    model = model.bind_tools([PMOutput], tool_choice="PMOutput")
 
     llm_input = [
         {"role": "system", "content": prompt},
@@ -385,7 +379,16 @@ def run_public_conversational_pass(
     ]
 
     try:
-        result = invoke_llm(structured_model, llm_input)
+        raw_res = invoke_llm(model, llm_input)
+        
+        if not raw_res.tool_calls:
+            logger.error(f"[PM Pass] No tool calls returned. Raw Output: {raw_res.content}")
+            raise ValueError("No tool calls returned by the model")
+            
+        args = raw_res.tool_calls[0]["args"]
+        logger.info(f"[PM Pass] Tool Call Args: {args}")
+        
+        result = PMOutput(**args)
 
         # Persist updated draft user stories
         if result and getattr(result, "updated_draft_user_stories", None):
@@ -394,10 +397,15 @@ def run_public_conversational_pass(
 
         return result
     except Exception as e:
-        logger.error(f"[PM Pass] Error: {e}")
+        logger.error(f"[PM Pass] Error or bad JSON: {e}")
+        if "429" in str(e):
+            next_q = "⚠️ Rate Limit Reached: Please wait for the token limit to reset."
+        else:
+            next_q = "I'm having trouble processing that right now. Could you please rephrase?"
+            
         return PMOutput(
             detected_gaps=["System Error: Unable to process requirements."],
-            next_question="I'm having trouble processing that right now. Could you please rephrase?",
+            next_question=next_q,
             project_goals="None",
             updated_draft_user_stories=""
         )
@@ -405,7 +413,7 @@ def run_public_conversational_pass(
 
 # ─── Graph Nodes ───────────────────────────────────────────────────────────
 
-def elicit_goals_node(state: ProjectState) -> Dict[str, Any]:
+def elicit_goals_node(state: ProjectState, config: RunnableConfig) -> Dict[str, Any]:
     """
     The main Dual-Core orchestration node.
     Runs the hidden Architect pass, then the public PM pass, per turn.
@@ -414,8 +422,26 @@ def elicit_goals_node(state: ProjectState) -> Dict[str, Any]:
     phase = state.get("elicitation_phase", "listening")
     goals_approved = state.get("goals_approved", False)
 
+    # Standard Chat Bypass (No Task Planning / Heavy LLM passes)
     if goals_approved:
-        return {"current_focus": "planning_tasks"}
+        # standard, lightweight chat response bypass
+        messages_history_str = ""
+        for msg in messages[-6:]:
+            role = "User" if isinstance(msg, HumanMessage) else "Assistant"
+            messages_history_str += f"{role}: {msg.content}\n"
+        
+        try:
+            llm = get_llm_model()
+            response = llm.invoke([HumanMessage(content=f"You are the PM assistant for this project. The goals have already been approved and tasks generated. Just chat lightly and answer questions. Keep answers concise.\n\nHistory:\n{messages_history_str}")])
+            return {
+                "messages": [AIMessage(content=response.content)],
+                "current_focus": "chat"
+            }
+        except Exception as e:
+            if "429" in str(e):
+                return {"messages": [AIMessage(content="⚠️ Rate Limit Reached: Please wait for the token limit to reset.")]}
+            logger.error(f"[Bypass Chat] Error: {e}")
+            return {"messages": [AIMessage(content="I'm having trouble processing that right now. Could you rephrase?")]}
 
     # Extract the last human message
     last_human_msg = ""
@@ -424,9 +450,10 @@ def elicit_goals_node(state: ProjectState) -> Dict[str, Any]:
             last_human_msg = m.content
             break
 
-    project_id = state.get("project_id")
+    project_id = config.get("configurable", {}).get("project_id")
     if not project_id:
-        raise ValueError("Missing project_id in state")
+        logger.error("CRITICAL: Graph context lost. project_id missing from config.")
+        raise ValueError("CRITICAL: Graph context lost. project_id missing from config.")
 
     initialize_workspace(project_id)
 
@@ -460,7 +487,7 @@ def elicit_goals_node(state: ProjectState) -> Dict[str, Any]:
 
     # Step 3: Run Public PM Pass
     pm_result = run_public_conversational_pass(
-        messages_history_str, architect_notes, phase, project_id
+        messages_history_str, architect_notes, phase, project_id, last_human_msg
     )
 
     out_gaps = pm_result.detected_gaps
@@ -510,7 +537,7 @@ Existing Tasks (JSON):
     return block
 
 
-def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
+def plan_tasks_node(state: ProjectState, config: RunnableConfig) -> Dict[str, Any]:
     """
     Generates structured developer tasks from the approved project goals.
     Implements Smart Merge: feeds existing task UUIDs to the LLM, then
@@ -521,7 +548,10 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     from .database import SessionLocal, TaskDb, task_dependencies_association
 
     goals = state.get("project_goals", "")
-    project_id = state.get("project_id", "")
+    project_id = config.get("configurable", {}).get("project_id")
+    if not project_id:
+        logger.error("CRITICAL: Graph context lost. project_id missing from config.")
+        raise ValueError("CRITICAL: Graph context lost. project_id missing from config.")
 
     # ── Phase 1: Query existing tasks and inject into prompt ──────────
     db = SessionLocal()
@@ -540,13 +570,28 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
     )
 
     model = get_llm_model()
-    structured_model = model.with_structured_output(PlanTasksOutput)
+    model = model.bind(response_format={"type": "json_object"})
+    
+    import json
+    schema = PlanTasksOutput.model_json_schema()
+    prompt += f"\n\nJSON SCHEMA TO FOLLOW:\n{json.dumps(schema)}"
     
     try:
-        result = invoke_llm(structured_model, prompt)
+        raw_res = invoke_llm(model, prompt)
+        raw_text = raw_res.content
+        logger.info(f"[PlanTasks] Raw Output: {raw_text}")
+        
+        # Manual JSON parse
+        clean_text = raw_text.strip()
+        if clean_text.startswith("```json"): clean_text = clean_text[7:]
+        elif clean_text.startswith("```"): clean_text = clean_text[3:]
+        if clean_text.endswith("```"): clean_text = clean_text[:-3]
+        clean_text = clean_text.strip()
+        
+        result = PlanTasksOutput.model_validate_json(clean_text)
     except Exception as e:
-        logger.error(f"[PlanTasks] Error invoking LLM: {e}")
-        print(f"CRITICAL: Task Generation Failed: {e}")
+        logger.error(f"[PlanTasks] Error or bad JSON: {e}")
+        print(f"Error: Task Generation Failed: {e}")
         # Return an empty PlanTasksOutput to allow graceful continuation
         result = PlanTasksOutput(tasks=[])
 
@@ -694,8 +739,8 @@ def plan_tasks_node(state: ProjectState) -> Dict[str, Any]:
 # ─── Conditional Router ───────────────────────────────────────────────────
 
 def route_next_node(state: ProjectState) -> str:
-    """Route to plan_tasks if goals are approved, otherwise END (wait for next input)."""
-    if state.get("goals_approved", False):
+    """Route to plan_tasks if we are in the planning focus, otherwise END (wait for next input)."""
+    if state.get("current_focus") == "planning_tasks":
         return "plan_tasks"
     return END
 

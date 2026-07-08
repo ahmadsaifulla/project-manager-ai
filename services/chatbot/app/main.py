@@ -23,6 +23,7 @@ from .database import init_db, get_db, TaskDb, UserDb, ProjectDb, task_dependenc
 from .schemas import Task, TaskStatus, TaskPriority, Project
 from .graph import workflow, ProjectState, get_llm_model, invoke_llm, get_workspace_dir
 from psycopg_pool import AsyncConnectionPool
+from langchain_groq import ChatGroq
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 import httpx
 from pydantic import BaseModel
@@ -241,7 +242,7 @@ def format_graph_state(state: Dict[str, Any], project_id: str) -> Dict[str, Any]
 
 async def get_project_state(project_id: str) -> Dict[str, Any]:
     """Fetch or initialize the LangGraph thread state for a project."""
-    config = {"configurable": {"thread_id": project_id}}
+    config = {"configurable": {"thread_id": project_id, "project_id": project_id}}
     state_snap = await app_graph.aget_state(config)
     if not state_snap.values:
         init_values = {
@@ -260,7 +261,14 @@ async def get_project_state(project_id: str) -> Dict[str, Any]:
     return state_snap.values
 
 
-# ─── API Endpoints ────────────────────────────────────────────────────────
+def parse_title_from_text(text: str) -> str:
+    """Extract a concise title from the first line of the requirements text."""
+    if not text or not text.strip():
+        return "New Project"
+    first_line = text.strip().split('\n')[0]
+    return first_line.replace('#', '').strip()[:50]
+
+# ─── Project Routes ────────────────────────────────────────────────────────
 
 @app.get("/api/projects", response_model=List[Project])
 async def list_projects(db: Session = Depends(get_db)):
@@ -272,9 +280,11 @@ async def list_projects(db: Session = Depends(get_db)):
 @app.post("/api/projects", response_model=Project)
 async def create_project(project: Project, db: Session = Depends(get_db)):
     """Create a new project in the database."""
+    project_name = project.name.strip() if project.name and project.name.strip() else "New Project"
+    
     db_project = ProjectDb(
         id=project.id,
-        name=project.name,
+        name=project_name,
         description=project.description,
         status=project.status,
         sprint=project.sprint,
@@ -338,8 +348,29 @@ async def post_message(project_id: str, payload: Dict[str, str] = Body(...), db:
     if not user_content:
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
 
-    config = {"configurable": {"thread_id": project_id}}
-    await get_project_state(project_id)  # Ensure state exists
+    print(f"CURRENT_PROJECT_CONTEXT: {user_content}")
+
+    config = {"configurable": {"thread_id": project_id, "project_id": project_id}}
+    state = await get_project_state(project_id)  # Ensure state exists
+
+    if not state.get("messages"):
+        # Explicitly clear state and memory for a new interaction
+        try:
+            pool = app_graph.checkpointer.conn
+            async with pool.connection() as conn:
+                await conn.execute("DELETE FROM checkpoints WHERE thread_id = %s", (project_id,))
+                await conn.execute("DELETE FROM checkpoint_writes WHERE thread_id = %s", (project_id,))
+                await conn.execute("DELETE FROM checkpoint_blobs WHERE thread_id = %s", (project_id,))
+        except Exception as e:
+            print(f"Checkpointer flush ignored or failed: {e}")
+            
+        await app_graph.aupdate_state(config, {
+            "tasks": [],
+            "detected_gaps": [],
+            "project_goals": "",
+            "clarification_questions": [],
+            "elicitation_phase": "listening"
+        })
 
     human_msg = HumanMessage(content=user_content)
     updated_state_snap = await app_graph.ainvoke({"messages": [human_msg]}, config)
@@ -354,7 +385,7 @@ async def finish_sharing(project_id: str, db: Session = Depends(get_db)):
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    config = {"configurable": {"thread_id": project_id}}
+    config = {"configurable": {"thread_id": project_id, "project_id": project_id}}
     state = await get_project_state(project_id)
 
     if state.get("elicitation_phase") != "listening":
@@ -376,7 +407,7 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    config = {"configurable": {"thread_id": project_id}}
+    config = {"configurable": {"thread_id": project_id, "project_id": project_id}}
     state = await get_project_state(project_id)
 
     if state.get("goals_approved"):
@@ -396,6 +427,7 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
                 "goals_approved": True,
                 "elicitation_phase": "goals_approved",
                 "messages": [concluding_msg],
+                "current_focus": "planning_tasks",
             },
             as_node="elicit_goals",
         )
@@ -408,6 +440,24 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
             status_code=500,
             detail="Failed to generate tasks. Please try again."
         )
+
+    # ── Auto-Name Generation & Status Update ──
+    try:
+        if not db_project.name or db_project.name == "New Project":
+            draft_path = os.path.join(get_workspace_dir(project_id), "DRAFT_USER_STORIES.md")
+            requirements_text = "No requirements provided."
+            if os.path.exists(draft_path):
+                with open(draft_path, "r", encoding="utf-8") as f:
+                    requirements_text = f.read()
+            
+            db_project.name = parse_title_from_text(requirements_text)
+
+        db_project.status = "Approved"
+        db.commit()
+    except Exception as e:
+        logger.error(f"[ApproveGoals] Auto-naming failed: {e}")
+        db_project.status = "Approved"
+        db.commit()
 
     updated_state_snap = (await app_graph.aget_state(config)).values
 
@@ -427,7 +477,7 @@ async def reject_goals(project_id: str, db: Session = Depends(get_db)):
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    config = {"configurable": {"thread_id": project_id}}
+    config = {"configurable": {"thread_id": project_id, "project_id": project_id}}
     state = await get_project_state(project_id)
 
     if state.get("goals_approved"):
@@ -458,7 +508,7 @@ async def unlock_requirements(project_id: str, db: Session = Depends(get_db)):
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    config = {"configurable": {"thread_id": project_id}}
+    config = {"configurable": {"thread_id": project_id, "project_id": project_id}}
     await get_project_state(project_id)
 
     # Do NOT remove persisted tasks; we will use Smart Merge to upsert/append

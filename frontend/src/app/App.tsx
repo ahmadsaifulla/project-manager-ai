@@ -47,17 +47,18 @@ const PRIORITY_CONFIG = {
   low: { label: "Low", classes: "bg-green-50 text-green-600 border-green-100" },
 };
 
-const STATUS_CONFIG: Record<Project["status"], { dot: string; label: string; bg: string; text: string }> = {
-  approved: { dot: "bg-green-500", label: "Approved", bg: "bg-green-50", text: "text-green-700" },
+const STATUS_CONFIG: Record<string, { dot: string; label: string; bg: string; text: string }> = {
+  Approved: { dot: "bg-green-500", label: "Approved", bg: "bg-green-50", text: "text-green-700" },
   reviewing: { dot: "bg-amber-400", label: "Under Review", bg: "bg-amber-50", text: "text-amber-700" },
-  listening: { dot: "bg-primary", label: "Requirements", bg: "bg-accent", text: "text-accent-foreground" },
+  Requirements: { dot: "bg-slate-400", label: "Requirements", bg: "bg-slate-100", text: "text-slate-600" },
   "in-progress": { dot: "bg-blue-500", label: "In Progress", bg: "bg-blue-50", text: "text-blue-700" },
 };
 
 // ─── Project Dashboard ────────────────────────────────────────────────────────
 
-function ProjectDashboard({ projects, onSelect, onCreate }: { projects: Project[]; onSelect: (p: Project) => void; onCreate: () => void }) {
+function ProjectDashboard({ projects, onSelect, onCreate }: { projects: Project[]; onSelect: (p: Project) => void; onCreate: (name: string) => void }) {
   const [filter, setFilter] = useState<"all" | Project["status"]>("all");
+  const [newProjectName, setNewProjectName] = useState("");
 
   const filtered = filter === "all" ? projects : projects.filter((p) => p.status === filter);
 
@@ -81,10 +82,19 @@ function ProjectDashboard({ projects, onSelect, onCreate }: { projects: Project[
               {projects.length} active projects · Select one to open the workspace
             </p>
           </div>
-          <button onClick={onCreate} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium transition-all hover:bg-primary/90 active:scale-[0.98]">
-            <Plus size={14} />
-            New Project
-          </button>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="Project Name (optional)"
+              value={newProjectName}
+              onChange={(e) => setNewProjectName(e.target.value)}
+              className="px-3 py-2 rounded-xl border border-border bg-input-background text-sm outline-none focus:border-primary/50 transition-colors"
+            />
+            <button onClick={() => { onCreate(newProjectName); setNewProjectName(""); }} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium transition-all hover:bg-primary/90 active:scale-[0.98]">
+              <Plus size={14} />
+              New Project
+            </button>
+          </div>
         </div>
 
         {/* Filter pills */}
@@ -108,7 +118,9 @@ function ProjectDashboard({ projects, onSelect, onCreate }: { projects: Project[
       <div className="flex-1 overflow-y-auto px-8 py-6 scrollbar-hidden">
         <div className="grid grid-cols-1 gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}>
           {filtered.map((project) => {
-            const sc = STATUS_CONFIG[project.status];
+            // Capitalize first letter to handle legacy lowercase statuses if they exist in cache
+            const statusKey = project.status.charAt(0).toUpperCase() + project.status.slice(1);
+            const sc = STATUS_CONFIG[statusKey] || STATUS_CONFIG["Requirements"];
             return (
               <button
                 key={project.id}
@@ -877,14 +889,14 @@ export default function App() {
     reloadProjects();
   }, []);
 
-  async function handleNewProject() {
+  async function handleNewProject(name: string) {
     setLoading(true);
     try {
       const p = await createProject({
         id: `proj_${Date.now()}`,
-        name: "New Project",
+        name: name,
         description: "A new project",
-        status: "listening",
+        status: "Requirements",
         progress: 0,
         tags: [],
         accent_color: "#5B4EFF"

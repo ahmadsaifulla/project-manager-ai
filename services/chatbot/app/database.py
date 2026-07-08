@@ -75,9 +75,9 @@ class ProjectDb(Base):
     __tablename__ = "projects"
 
     id = Column(String(50), primary_key=True)
-    name = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False, default="New Project")
     description = Column(Text, nullable=True)
-    status = Column(String(50), default="listening")  # listening, reviewing, approved, in-progress
+    status = Column(String(50), default="Requirements")  # Requirements, reviewing, Approved, in-progress
     sprint = Column(String(100), nullable=True)
     progress = Column(Integer, default=0)
     due_date = Column(String(100), nullable=True)

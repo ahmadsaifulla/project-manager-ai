@@ -31,9 +31,9 @@ class TaskPriority(str, Enum):
 
 class Project(BaseModel):
     id: str
-    name: str
+    name: str = "New Project"
     description: Optional[str] = None
-    status: str = "listening"
+    status: str = "Requirements"
     sprint: Optional[str] = None
     progress: int = 0
     due_date: Optional[str] = None
@@ -81,7 +81,7 @@ class PMOutput(BaseModel):
     )
     updated_draft_user_stories: str = Field(
         default="",
-        description="Complete, updated text of DRAFT_USER_STORIES.md, appending newly confirmed requirements systematically."
+        description="Complete, updated text of DRAFT_USER_STORIES.md, appending newly confirmed requirements systematically. A maximum of 5 distinct, high-level user stories. Do not iterate. Do not repeat."
     )
 
 
