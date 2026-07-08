@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+const API_BASE = import.meta.env.VITE_API_URL || "/api";
 
 export interface Project {
   id: string;

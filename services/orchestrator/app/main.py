@@ -135,6 +135,21 @@ async def proxy_get_project(project_id: str):
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
+@app.delete("/api/projects/{project_id}")
+async def proxy_delete_project(project_id: str):
+    """Proxy to delete a project."""
+    target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(target_url, timeout=30.0)
+            try:
+                content = response.json()
+            except Exception:
+                content = {}
+            return JSONResponse(status_code=response.status_code, content=content)
+    except httpx.RequestError as e:
+        return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
+
 @app.post("/api/projects/{project_id}/messages")
 async def proxy_post_message(project_id: str, request: Request):
     """Proxy chat messages."""

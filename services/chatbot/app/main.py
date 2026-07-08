@@ -337,6 +337,29 @@ async def get_project(project_id: str, db: Session = Depends(get_db)):
     return response_data
 
 
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str, db: Session = Depends(get_db)):
+    """Delete a project and its associated tasks."""
+    db_project = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    db.delete(db_project)
+    db.commit()
+
+    # Flush LangGraph checkpoints to prevent ghost states
+    try:
+        pool = app_graph.checkpointer.conn
+        async with pool.connection() as conn:
+            await conn.execute("DELETE FROM checkpoints WHERE thread_id = %s", (project_id,))
+            await conn.execute("DELETE FROM checkpoint_writes WHERE thread_id = %s", (project_id,))
+            await conn.execute("DELETE FROM checkpoint_blobs WHERE thread_id = %s", (project_id,))
+    except Exception as e:
+        print(f"Checkpointer flush on delete ignored or failed: {e}")
+
+    return {"status": "success"}
+
+
 @app.post("/api/projects/{project_id}/messages")
 async def post_message(project_id: str, payload: Dict[str, str] = Body(...), db: Session = Depends(get_db)):
     """Send a user message and invoke the LangGraph flow."""

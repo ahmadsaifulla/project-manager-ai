@@ -23,6 +23,7 @@ import {
   Calendar,
   ChevronDown,
   Layers,
+  Trash2,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -56,7 +57,7 @@ const STATUS_CONFIG: Record<string, { dot: string; label: string; bg: string; te
 
 // ─── Project Dashboard ────────────────────────────────────────────────────────
 
-function ProjectDashboard({ projects, onSelect, onCreate }: { projects: Project[]; onSelect: (p: Project) => void; onCreate: (name: string) => void }) {
+function ProjectDashboard({ projects, onSelect, onCreate, onDelete }: { projects: Project[]; onSelect: (p: Project) => void; onCreate: (name: string) => void; onDelete: (id: string) => void }) {
   const [filter, setFilter] = useState<"all" | Project["status"]>("all");
   const [newProjectName, setNewProjectName] = useState("");
 
@@ -135,10 +136,21 @@ function ProjectDashboard({ projects, onSelect, onCreate }: { projects: Project[
                   >
                     <Layers size={16} style={{ color: project.accent_color }} />
                   </div>
-                  <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${sc.bg} ${sc.text}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${sc.dot}`} />
-                    {sc.label}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${sc.bg} ${sc.text}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${sc.dot}`} />
+                      {sc.label}
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDelete(project.id);
+                      }}
+                      className="p-1.5 rounded-lg text-muted-foreground hover:bg-red-500/10 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
 
                 <h3 className="text-sm font-semibold text-foreground mb-1 group-hover:text-primary transition-colors">
@@ -910,6 +922,19 @@ export default function App() {
     }
   }
 
+  async function handleDeleteProject(id: string) {
+    try {
+      const res = await fetch(`/api/projects/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        setProjects(projects.filter((p) => p.id !== id));
+      } else {
+        console.error("Failed to delete project");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   function openProject(p: Project) {
     setSelectedProject(p);
     setView("project");
@@ -985,7 +1010,7 @@ export default function App() {
             <Loader2 className="animate-spin text-primary" size={24} />
           </div>
         ) : (
-          <ProjectDashboard projects={projects} onSelect={openProject} onCreate={handleNewProject} />
+          <ProjectDashboard projects={projects} onSelect={openProject} onCreate={handleNewProject} onDelete={handleDeleteProject} />
         )
       )}
       {view === "project" && selectedProject && (
