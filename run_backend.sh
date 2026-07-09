@@ -17,14 +17,16 @@ cleanup() {
 # Trap termination signals
 trap cleanup SIGINT SIGTERM
 
+export PYTHONPATH=$(pwd)
+
 echo "🚀 Booting Orchestrator Node (Port 8000)..."
-(cd services/orchestrator && source venv/bin/activate && uvicorn app.main:app --port 8000 --reload) &
+./services/orchestrator/venv/bin/uvicorn services.orchestrator.app.main:app --host 127.0.0.1 --port 8000 --reload &
 
 echo "🚀 Booting Chatbot Node (Port 8001)..."
-(cd services/chatbot && source venv/bin/activate && PROJECT_BASE_DIR="../../workspace" uvicorn app.main:app --port 8001 --reload) &
+PROJECT_BASE_DIR="workspace" ./services/chatbot/venv/bin/uvicorn services.chatbot.app.main:app --host 127.0.0.1 --port 8001 --reload &
 
 echo "🚀 Booting Developer Node (Port 8002)..."
-(cd services/developer && source venv/bin/activate && PROJECT_BASE_DIR="../../workspace" uvicorn app.main:app --port 8002 --reload) &
+PROJECT_BASE_DIR="workspace" ./services/developer/venv/bin/uvicorn services.developer.app.main:app --host 127.0.0.1 --port 8002 --reload &
 
 echo -e "\n🟢 Backend Cluster is online! Press Ctrl+C to terminate."
 echo "--------------------------------------------------------"

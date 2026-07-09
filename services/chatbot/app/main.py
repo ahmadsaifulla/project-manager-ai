@@ -176,7 +176,8 @@ def execute_state_finalization(project_id: str, state: Dict[str, Any]):
 async def lifespan(application: FastAPI):
     """Initialize Postgres checkpointer, DB schemas, and seed sample users on startup."""
     global app_graph
-    pool = AsyncConnectionPool(DATABASE_URL, kwargs={"autocommit": True})
+    pool = AsyncConnectionPool(DATABASE_URL, kwargs={"autocommit": True}, open=False)
+    await pool.open()
     checkpointer = AsyncPostgresSaver(pool)
     await checkpointer.setup()
     app_graph = workflow.compile(checkpointer=checkpointer)
@@ -236,7 +237,7 @@ def format_graph_state(state: Dict[str, Any], project_id: str) -> Dict[str, Any]
         "clarification_questions": state.get("clarification_questions", []),
         "messages": messages_list,
         "current_focus": state.get("current_focus", "idle"),
-        "tasks": [task.model_dump() for task in state.get("tasks", [])],
+        "tasks": [task if isinstance(task, dict) else task.model_dump() for task in state.get("tasks", [])],
     }
 
 

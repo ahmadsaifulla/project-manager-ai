@@ -12,6 +12,7 @@ export interface Project {
   dueDate?: string;
   tags: string[];
   accent_color: string;
+  github_repo_url?: string;
 }
 
 export interface KanbanTask {

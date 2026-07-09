@@ -1,3 +1,8 @@
+import sys
+import os
+# Force the root Project-Manager directory into the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+
 import logging
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -184,20 +189,32 @@ async def proxy_get_tasks(project_id: str):
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
-async def trigger_qc_evaluation(project_id: str, task_id: str):
+def parse_branch(branch_ref):
+    return branch_ref.split("/")[-1]
+
+async def trigger_qc_node(project_id: str, task_id: str):
     """Background webhook to trigger the Developer Node QC evaluation."""
     target_url = "http://127.0.0.1:8002/api/qc/evaluate"
+    
+    # "fetch repo_url and branch_name from your database based on the project_id."
+    # Since orchestrator uses global state:
+    repo_url = project_state.get("repo_name", "facebook/react")
+    branch_ref = f"refs/heads/feature/{project_id}-{task_id}"
+    branch_name = parse_branch(branch_ref)
+
     payload = {
         "project_id": project_id,
-        "task_id": task_id
+        "task_id": task_id,
+        "repo_url": repo_url,
+        "branch_name": branch_name
     }
+    
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(target_url, json=payload, timeout=60.0)
             response.raise_for_status()
             logging.info(f"Successfully triggered QC node for Task {task_id}")
     except Exception as e:
-        # Fails gracefully without crashing the main orchestrator loop
         logging.error(f"Failed to trigger QC evaluation for Task {task_id}: {e}")
 
 @app.patch("/api/projects/{project_id}/tasks/{task_id}")
@@ -211,7 +228,7 @@ async def proxy_update_task(project_id: str, task_id: str, update: TaskUpdateReq
             
             # If the patch was successful and status is moved to IN QC, trigger the background evaluation
             if response.status_code == 200 and update.status == "in_qc":
-                background_tasks.add_task(trigger_qc_evaluation, project_id, task_id)
+                background_tasks.add_task(trigger_qc_node, project_id, task_id)
                 
             return JSONResponse(status_code=response.status_code, content=response.json())
     except httpx.RequestError as e:

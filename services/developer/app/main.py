@@ -1,6 +1,19 @@
+import sys
 import os
+# Force the root Project-Manager directory into the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+
+print(f"DEBUG: Current Working Directory: {os.getcwd()}")
+print(f"DEBUG: PATH to .env: {os.path.join(os.getcwd(), '.env')}")
+print(f"DEBUG: GITHUB_TOKEN exists in env? {'GITHUB_TOKEN' in os.environ}")
+
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
+
+token = os.getenv("GITHUB_TOKEN")
+if not token:
+    print("WARNING: GITHUB_TOKEN not found in environment. QC evaluations will fail.")
+
 import json
 import logging
 import httpx
@@ -13,22 +26,19 @@ app = FastAPI(title="Developer Node API")
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
 
-class QCEvaluationRequest(BaseModel):
-    project_id: str
-    task_id: str
-    repo_name: str
+from services.shared.schemas import QCRequest
 
 @app.get("/")
 def read_root():
     """Health check endpoint."""
     return {"status": "ok"}
 
-async def fetch_github_diff(repo_name: str) -> str:
+async def fetch_github_diff(repo_url: str, branch_name: str) -> str:
     github_token = os.getenv("GITHUB_TOKEN")
     if not github_token:
         raise ValueError("GITHUB_TOKEN is not set")
     
-    url = f"https://api.github.com/repos/{repo_name}/commits/main"
+    url = f"https://api.github.com/repos/{repo_url}/compare/main...{branch_name}"
     headers = {
         "Authorization": f"token {github_token}",
         "Accept": "application/vnd.github.v3.diff"
@@ -67,7 +77,7 @@ async def call_groq_api(prompt: str) -> str:
         return groq_data["choices"][0]["message"]["content"]
 
 @app.post("/api/qc/evaluate")
-async def evaluate_qc(request: QCEvaluationRequest):
+async def evaluate_qc(request: QCRequest):
     """
     Triggers the QC evaluation of the diff using Groq.
     """
@@ -89,24 +99,43 @@ async def evaluate_qc(request: QCEvaluationRequest):
             task_description = task_data.get("description", "No description")
 
         # Step B: Call fetch_github_diff
-        diff = await fetch_github_diff(request.repo_name)
+        diff = await fetch_github_diff(request.repo_url, request.branch_name)
 
         # Step C: Construct prompt for Groq
-        prompt = (
-            f"You are a strict QA Engineer. Does this code diff satisfy this task requirement? "
-            f"Task: {task_title} - {task_description}. "
-            f"Code Diff: {diff}. "
-            f"Output strictly JSON with boolean 'pass' and string 'feedback'."
-        )
+        QC_PROMPT = f"""
+        You are a Senior Software Engineer performing a PR code review.
+        Evaluate this code diff for:
+        1. Correctness (Does it meet task requirements?)
+        2. Security (Are there leaks or bad practices?)
+        3. Efficiency (Is the code clean?)
+        
+        TASK REQUIREMENTS:
+        {task_title} - {task_description}
+
+        CODE DIFF:
+        {diff}
+
+        Output format (JSON):
+        {{
+            "passed": boolean,
+            "feedback": "string (detailed review comments)",
+            "suggested_changes": "string (or None)"
+        }}
+        """
         
         # This function handles its own retries internally
-        result_text = await call_groq_api(prompt)
+        result_text = await call_groq_api(QC_PROMPT)
             
         # Step D: Parse the Groq response
+        import re
         try:
-            parsed_result = json.loads(result_text)
-            passed = parsed_result.get("pass", False)
+            clean_json = re.sub(r'^```json\s*|\s*```$', '', result_text.strip())
+            parsed_result = json.loads(clean_json)
+            passed = parsed_result.get("passed", False)
             feedback = parsed_result.get("feedback", "")
+            suggested_changes = parsed_result.get("suggested_changes")
+            if suggested_changes and suggested_changes != "None":
+                feedback += f"\n\nSuggested Changes:\n{suggested_changes}"
         except json.JSONDecodeError:
             passed = False
             feedback = "Failed to parse JSON response from Groq."

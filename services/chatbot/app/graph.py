@@ -115,9 +115,7 @@ CRITICAL GUARDRAIL: Do NOT output this engineering jargon to the user. This outp
 CRITICAL: You must return valid JSON matching the exact schema.
 """
 
-SYSTEM_PM = """YOU ARE CURRENTLY ANALYZING: {user_input}. You must generate user stories and tasks that are strictly derived from this input. DO NOT use generic examples like expense trackers or CRM systems. If the user input is about a game (e.g., Snake), your tasks must be specific to game development (e.g., Grid rendering, Collision detection, Score tracking).
-
-You are a structured data processor. You must output a JSON object using the PMOutput tool. Do not generate conversational text.
+SYSTEM_PM_THINKING = """YOU ARE CURRENTLY ANALYZING: {user_input}. You must generate user stories and tasks that are strictly derived from this input. DO NOT use generic examples like expense trackers or CRM systems. If the user input is about a game (e.g., Snake), your tasks must be specific to game development (e.g., Grid rendering, Collision detection, Score tracking).
 
 Read the Architect's Friction Stance (TEMP_ARCHITECT.md) and translate complex problems into product trade-offs.
 
@@ -143,7 +141,31 @@ Architect Notes (TEMP_ARCHITECT.md):
 Current DRAFT_USER_STORIES.md:
 {draft_user_stories}
 
-Merge Instructions: If a PRD or Task List exists, act as an editor. Append and integrate new requirements. Do not regenerate existing tasks."""
+Merge Instructions: If a PRD or Task List exists, act as an editor. Append and integrate new requirements. Do not regenerate existing tasks.
+
+CRITICAL RULES FOR QUESTIONS:
+- NEVER ask more than ONE question at a time.
+- If the user says 'I don't know', 'doesn't matter', or gives a vague answer, ACCEPT IT. DO NOT ask the question again. Make a standard industry assumption and move to the next topic.
+- If you have enough information to build a V1, stop asking questions and output the finalized requirements.
+
+Output your complete analysis, gaps, next question, goals, and user stories in raw text. Do not use JSON."""
+
+FORMATTER_PROMPT = """You are a strict data formatting engine. 
+Extract data from the TEXT below into valid JSON.
+
+CRITICAL: Output ONLY valid JSON. Do not add conversational text, notes, or explanations.
+
+EXAMPLE OUTPUT:
+{{
+    "detected_gaps": ["Data Scope"],
+    "next_question": "What is the expected user count?",
+    "project_goals": "### What We Have Done / Finalized\\n- Defined scope\\n### What Needs to Be Done / Next Steps\\n- Build API\\n### What to Update\\n- None",
+    "updated_draft_user_stories": ["As a user, I want to login."]
+}}
+
+TEXT TO FORMAT:
+{raw_text}
+"""
 
 SYSTEM_PLANNER = """You are the final translation and packaging agent.
 Your role is to read the approved project goals and generate a complete "Translation Package" for handoff.
@@ -157,6 +179,14 @@ Each task must contain:
 - ref_id: A unique temporary integer starting from 1 (e.g., 1, 2, 3). This is ONLY for dependency mapping.
 - title, description, priority (low/medium/high/critical), estimated_effort
 - dependencies: A list of ref_id integers that this task depends on. Must form a valid DAG (no circular dependencies).
+
+TASK FORMATTING RULES:
+1. Task Titles: Generate clear, human-readable titles (e.g., 'Setup MongoDB Schema'). DO NOT use IDs or hashes in the title.
+2. Task Description (CRITICAL): The description MUST be a detailed Markdown string containing:
+   - User Story: (As a [user], I want to...)
+   - Technical Implementation Details: (Specific frameworks, libraries, and architectural decisions).
+   - Sub-tasks: A bulleted list of step-by-step actions required to complete the task.
+   - Branch Names: Format as category/human-readable-feature-name (e.g., feature/database-schema). DO NOT use UUIDs in the branch name.
 
 You are completely generic — generate tasks appropriate for whatever project the user described.
 
@@ -343,10 +373,10 @@ def run_public_conversational_pass(
     elicitation_phase: str,
     project_id: str,
     user_input: str,
-) -> PMOutput:
+) -> dict:
     """
     Step 2: The Public Product Manager Pass.
-    Invokes the PM LLM with structured output, updates DRAFT_USER_STORIES.md.
+    Invokes the PM LLM in two passes (Thinking, then Formatting).
     """
     base_dir = get_workspace_dir(project_id)
     draft_file = os.getenv("USER_STORIES_FILE", "DRAFT_USER_STORIES.md")
@@ -356,7 +386,7 @@ def run_public_conversational_pass(
         with open(draft_path, "r", encoding="utf-8") as f:
             draft_content = f.read()
 
-    prompt = SYSTEM_PM.format(
+    prompt = SYSTEM_PM_THINKING.format(
         elicitation_phase=elicitation_phase,
         architect_notes=architect_notes,
         draft_user_stories=draft_content,
@@ -364,7 +394,6 @@ def run_public_conversational_pass(
     )
 
     model = get_llm_model()
-    model = model.bind_tools([PMOutput], tool_choice="PMOutput")
 
     llm_input = [
         {"role": "system", "content": prompt},
@@ -379,20 +408,38 @@ def run_public_conversational_pass(
     ]
 
     try:
-        raw_res = invoke_llm(model, llm_input)
+        # Pass 1: Thinking
+        thinking_response = invoke_llm(model, llm_input)
+        raw_text = thinking_response.content
+        logger.info(f"[PM Pass 1] Thinking: {raw_text}")
         
-        if not raw_res.tool_calls:
-            logger.error(f"[PM Pass] No tool calls returned. Raw Output: {raw_res.content}")
-            raise ValueError("No tool calls returned by the model")
-            
-        args = raw_res.tool_calls[0]["args"]
-        logger.info(f"[PM Pass] Tool Call Args: {args}")
+        # Pass 2: JSON Formatting
+        import json
+        import re
+        # Set temperature to 0.0 for maximum consistency
+        # Set max_tokens to 1000 to prevent "chatty" hallucinations
+        json_model = model.bind(
+            response_format={"type": "json_object"}, 
+            temperature=0.0, 
+            max_tokens=1000
+        )
+        formatter_input = [
+            {"role": "system", "content": FORMATTER_PROMPT.format(raw_text=raw_text)}
+        ]
         
-        result = PMOutput(**args)
+        formatting_response = invoke_llm(json_model, formatter_input)
+        raw_content = formatting_response.content
+        
+        try:
+            clean_json = re.sub(r'^```json\s*|\s*```$', '', raw_content.strip())
+            result = json.loads(clean_json)
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse JSON: {raw_content}")
+            result = {}
 
         # Persist updated draft user stories
-        if result and getattr(result, "updated_draft_user_stories", None):
-            stories_list = result.updated_draft_user_stories
+        if result and result.get("updated_draft_user_stories"):
+            stories_list = result.get("updated_draft_user_stories", [])
             markdown_stories = "\n\n".join([f"- {story}" for story in stories_list])
             with open(draft_path, "w", encoding="utf-8") as f:
                 f.write(markdown_stories)
@@ -405,12 +452,12 @@ def run_public_conversational_pass(
         else:
             next_q = "I'm having trouble processing that right now. Could you please rephrase?"
             
-        return PMOutput(
-            detected_gaps=["System Error: Unable to process requirements."],
-            next_question=next_q,
-            project_goals="None",
-            updated_draft_user_stories=[]
-        )
+        return {
+            "detected_gaps": ["System Error: Unable to process requirements."],
+            "next_question": next_q,
+            "project_goals": "None",
+            "updated_draft_user_stories": []
+        }
 
 
 # ─── Graph Nodes ───────────────────────────────────────────────────────────
@@ -492,8 +539,8 @@ def elicit_goals_node(state: ProjectState, config: RunnableConfig) -> Dict[str, 
         messages_history_str, architect_notes, phase, project_id, last_human_msg
     )
 
-    out_gaps = pm_result.detected_gaps
-    out_questions = [pm_result.next_question] if out_gaps else []
+    out_gaps = pm_result.get("detected_gaps", [])
+    out_questions = [pm_result.get("next_question", "")] if out_gaps else []
 
     # In listening phase, suppress gaps — just listen
     if phase == "listening":
@@ -501,10 +548,10 @@ def elicit_goals_node(state: ProjectState, config: RunnableConfig) -> Dict[str, 
         out_questions = []
 
     return {
-        "project_goals": pm_result.project_goals,
+        "project_goals": pm_result.get("project_goals", "None"),
         "detected_gaps": out_gaps,
         "clarification_questions": out_questions,
-        "messages": [AIMessage(content=pm_result.next_question)],
+        "messages": [AIMessage(content=pm_result.get("next_question", ""))],
         "current_focus": "eliciting_goals",
     }
 
