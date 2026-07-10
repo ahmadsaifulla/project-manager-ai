@@ -26,6 +26,12 @@ export default function TaskBoard({ project }: { project: Project }) {
   }, [project.id]);
 
   const handleStatusChange = async (taskId: string, newStatus: string) => {
+    if (newStatus === "in_qc" && !repoUrl.trim()) {
+      alert("Please configure a target repository in the settings first!");
+      setShowSettings(true);
+      return;
+    }
+    
     // Optimistic update
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus as any } : t));
     try {

@@ -19,7 +19,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 load_dotenv()
 
-from .database import init_db, get_db, TaskDb, UserDb, ProjectDb, task_dependencies_association, engine, DATABASE_URL
+from .database import init_db, get_db, TaskDb, UserDb, ProjectDb, task_dependencies_association, engine, DATABASE_URL, SessionLocal
 from .schemas import Task, TaskStatus, TaskPriority, Project
 from .graph import workflow, ProjectState, get_llm_model, invoke_llm, get_workspace_dir
 from psycopg_pool import AsyncConnectionPool
@@ -442,7 +442,6 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
             status_code=400, detail="Cannot approve goals with unresolved gaps"
         )
 
-    # Trigger goal approval and task generation via standard LangGraph flow
     try:
         concluding_msg = AIMessage(content="Got it! Starting your project now...")
         await app_graph.aupdate_state(
@@ -456,16 +455,21 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
             as_node="elicit_goals",
         )
 
-        # Resume graph execution — triggers plan_tasks node (which handles DB persistence)
-        await app_graph.ainvoke(None, config)
-    except Exception as e:
-        logger.error(f"[ApproveGoals] Task generation failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to generate tasks. Please try again."
-        )
+        db_project.pipeline_status = "in_progress"
+        db_project.pipeline_error = None
+        db.commit()
 
-    # ── Auto-Name Generation & Status Update ──
+        # Trigger analysis in the background
+        background_tasks.add_task(run_analysis_pipeline, project_id, config)
+
+    except Exception as e:
+        logger.error(f"[ApproveGoals] Failed to launch background pipeline: {e}")
+        db_project.pipeline_status = "failed"
+        db_project.pipeline_error = str(e)
+        db.commit()
+        raise HTTPException(status_code=500, detail="Failed to start analysis pipeline.")
+
+    # ── Auto-Name Generation ──
     try:
         if not db_project.name or db_project.name == "New Project":
             draft_path = os.path.join(get_workspace_dir(project_id), "DRAFT_USER_STORIES.md")
@@ -480,8 +484,6 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
         db.commit()
     except Exception as e:
         logger.error(f"[ApproveGoals] Auto-naming failed: {e}")
-        db_project.status = "Approved"
-        db.commit()
 
     updated_state_snap = (await app_graph.aget_state(config)).values
 
@@ -493,6 +495,42 @@ async def approve_goals(project_id: str, background_tasks: BackgroundTasks, db: 
 
     return format_graph_state(updated_state_snap, project_id)
 
+import traceback
+
+async def run_analysis_pipeline(project_id: str, config: dict):
+    db = SessionLocal()
+    try:
+        _set_pipeline_status(db, project_id, "in_progress")
+        db.commit()
+    finally:
+        db.close()
+
+    try:
+        # Run the full LLM graph pipeline
+        await app_graph.ainvoke(None, config)
+
+        db = SessionLocal()
+        try:
+            _set_pipeline_status(db, project_id, "completed")
+            db.commit()
+        finally:
+            db.close()
+
+    except Exception as e:
+        logger.error(f"Pipeline failed for project_id={project_id}: {e}\n{traceback.format_exc()}")
+        db = SessionLocal()
+        try:
+            _set_pipeline_status(db, project_id, "failed", error_message=str(e))
+            db.commit()
+        finally:
+            db.close()
+
+def _set_pipeline_status(db, project_id: str, status: str, error_message: str = None):
+    project = db.query(ProjectDb).filter(ProjectDb.id == project_id).first()
+    if project:
+        project.pipeline_status = status
+        if error_message is not None:
+            project.pipeline_error = error_message
 
 @app.post("/api/projects/{project_id}/reject-goals")
 async def reject_goals(project_id: str, db: Session = Depends(get_db)):
@@ -556,14 +594,13 @@ class TaskUpdateRequest(BaseModel):
     assignee: str | None = None
     evaluation_feedback: str | None = None
 
-async def trigger_qc_node(task_id: str, repo_name: str, branch_name: str, project_id: str):
+async def trigger_qc_node(task_id: str, project_id: str):
+    """Proxy QC trigger through the orchestrator, which owns the repo config and branch-name logic."""
     try:
         target_url = "http://127.0.0.1:8000/api/qc/evaluate"
         payload = {
             "task_id": task_id,
             "project_id": project_id,
-            "repo_name": repo_name,
-            "branch_name": branch_name
         }
         async with httpx.AsyncClient() as client:
             response = await client.post(target_url, json=payload, timeout=60.0)
@@ -606,7 +643,7 @@ async def update_project_task(project_id: str, task_id: str, payload: TaskUpdate
     db.refresh(task)
     
     if task.status == TaskStatus.IN_QC:
-        background_tasks.add_task(trigger_qc_node, task.id, "mock-repo", "mock-branch", project_id)
+        background_tasks.add_task(trigger_qc_node, task.id, project_id)
         
     return {"status": "success", "task": {"id": task.id, "status": task.status.value, "evaluation_feedback": task.evaluation_feedback}}
 

@@ -41,37 +41,31 @@ app.add_middleware(
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
 
-# Light persistence layout to store global project metadata
-# This allows the React frontend to fetch/update these values globally.
-project_state = {
-    "repo_name": "facebook/react",
-    "developer_node_url": "http://127.0.0.1:8002",
-    "chatbot_node_url": "http://127.0.0.1:8001"
-}
+from .config_manager import get_config, save_config
 
 @app.get("/")
 def get_status():
     """Health check and global state endpoint."""
     return {
         "status": "Master Orchestrator Online",
-        "state": project_state
+        "state": get_config()
     }
 
 # Step A: Global State Management Endpoints
 @app.get("/api/config")
-def get_config():
+def get_global_config():
     """Returns the current global project state."""
-    return project_state
+    return get_config()
 
 @app.post("/api/config")
-async def update_config(request: Request):
+async def update_global_config(request: Request):
     """Updates the global project state with the provided JSON payload."""
     try:
         payload = await request.json()
-        for key, value in payload.items():
-            if key in project_state:
-                project_state[key] = value
-        return {"status": "success", "state": project_state}
+        current = get_config()
+        current.update(payload)
+        save_config(current)
+        return {"status": "success", "state": current}
     except Exception as e:
         return JSONResponse(status_code=400, content={"detail": f"Invalid payload: {str(e)}"})
 
@@ -88,10 +82,14 @@ async def proxy_qc_evaluation(request: Request):
         payload = {}
         
     # Inject global state if not provided
-    if "repo_name" not in payload:
-        payload["repo_name"] = project_state["repo_name"]
+    if "repo_url" not in payload:
+        payload["repo_url"] = get_config().get("repo_name", "")
+    
+    # Inject branch_name using the single source of truth
+    if "branch_name" not in payload and "project_id" in payload and "task_id" in payload:
+        payload["branch_name"] = build_branch_name(payload["project_id"], payload["task_id"])
         
-    target_url = f"{project_state['developer_node_url']}/api/qc/evaluate"
+    target_url = f"{get_config()['developer_node_url']}/api/qc/evaluate"
     
     try:
         async with httpx.AsyncClient() as client:
@@ -109,7 +107,7 @@ async def proxy_qc_evaluation(request: Request):
 @app.get("/api/projects")
 async def proxy_list_projects():
     """Proxy to list all projects."""
-    target_url = f"{project_state['chatbot_node_url']}/api/projects"
+    target_url = f"{get_config()['chatbot_node_url']}/api/projects"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(target_url, timeout=30.0)
@@ -121,7 +119,7 @@ async def proxy_list_projects():
 async def proxy_create_project(project: ProjectCreateRequest):
     """Proxy to create a new project."""
     payload = project.model_dump(exclude_unset=True)
-    target_url = f"{project_state['chatbot_node_url']}/api/projects"
+    target_url = f"{get_config()['chatbot_node_url']}/api/projects"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(target_url, json=payload, timeout=30.0)
@@ -132,7 +130,7 @@ async def proxy_create_project(project: ProjectCreateRequest):
 @app.get("/api/projects/{project_id}")
 async def proxy_get_project(project_id: str):
     """Proxy to get project state."""
-    target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}"
+    target_url = f"{get_config()['chatbot_node_url']}/api/projects/{project_id}"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(target_url, timeout=30.0)
@@ -143,7 +141,7 @@ async def proxy_get_project(project_id: str):
 @app.delete("/api/projects/{project_id}")
 async def proxy_delete_project(project_id: str):
     """Proxy to delete a project."""
-    target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}"
+    target_url = f"{get_config()['chatbot_node_url']}/api/projects/{project_id}"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.delete(target_url, timeout=30.0)
@@ -159,7 +157,7 @@ async def proxy_delete_project(project_id: str):
 async def proxy_post_message(project_id: str, request: Request):
     """Proxy chat messages."""
     payload = await request.json()
-    target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/messages"
+    target_url = f"{get_config()['chatbot_node_url']}/api/projects/{project_id}/messages"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(target_url, json=payload, timeout=60.0)
@@ -170,7 +168,7 @@ async def proxy_post_message(project_id: str, request: Request):
 @app.post("/api/projects/{project_id}/{action}")
 async def proxy_project_action(project_id: str, action: str):
     """Proxy state transition actions."""
-    target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/{action}"
+    target_url = f"{get_config()['chatbot_node_url']}/api/projects/{project_id}/{action}"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(target_url, timeout=60.0)
@@ -181,7 +179,7 @@ async def proxy_project_action(project_id: str, action: str):
 @app.get("/api/projects/{project_id}/tasks")
 async def proxy_get_tasks(project_id: str):
     """Proxy fetching project tasks."""
-    target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/tasks"
+    target_url = f"{get_config()['chatbot_node_url']}/api/projects/{project_id}/tasks"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(target_url, timeout=30.0)
@@ -189,18 +187,16 @@ async def proxy_get_tasks(project_id: str):
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
-def parse_branch(branch_ref):
-    return branch_ref.split("/")[-1]
+def build_branch_name(project_id: str, task_id: str) -> str:
+    """Single source of truth for branch naming — matches frontend convention."""
+    return f"feature/{project_id}-{task_id}"
 
 async def trigger_qc_node(project_id: str, task_id: str):
     """Background webhook to trigger the Developer Node QC evaluation."""
     target_url = "http://127.0.0.1:8002/api/qc/evaluate"
     
-    # "fetch repo_url and branch_name from your database based on the project_id."
-    # Since orchestrator uses global state:
-    repo_url = project_state.get("repo_name", "facebook/react")
-    branch_ref = f"refs/heads/feature/{project_id}-{task_id}"
-    branch_name = parse_branch(branch_ref)
+    repo_url = get_config().get("repo_name", "facebook/react")
+    branch_name = build_branch_name(project_id, task_id)
 
     payload = {
         "project_id": project_id,
@@ -221,7 +217,7 @@ async def trigger_qc_node(project_id: str, task_id: str):
 async def proxy_update_task(project_id: str, task_id: str, update: TaskUpdateRequest, background_tasks: BackgroundTasks):
     """Proxy task updates."""
     payload = update.model_dump(exclude_unset=True)
-    target_url = f"{project_state['chatbot_node_url']}/api/projects/{project_id}/tasks/{task_id}"
+    target_url = f"{get_config()['chatbot_node_url']}/api/projects/{project_id}/tasks/{task_id}"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.patch(target_url, json=payload, timeout=30.0)

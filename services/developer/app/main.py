@@ -19,6 +19,74 @@ import logging
 import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+import re
+
+class JSONExtractionError(Exception):
+    """Raised when no valid JSON object could be extracted from LLM output."""
+
+def _try_parse(text: str) -> dict | None:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+def _find_balanced_braces(text: str) -> str | None:
+    """Find the first substring starting at '{' that has balanced braces."""
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+
+    for i in range(start, len(text)):
+        char = text[i]
+
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+
+    return None
+
+def extract_json_object(raw_output: str) -> dict:
+    raw_output = raw_output.strip()
+
+    # Strategy 1: fenced code block
+    fenced_match = re.search(r"```(?:json)?\s*\n?(.*?)```", raw_output, re.DOTALL)
+    if fenced_match:
+        candidate = fenced_match.group(1).strip()
+        parsed = _try_parse(candidate)
+        if parsed is not None:
+            return parsed
+
+    # Strategy 2: brace-matching
+    candidate = _find_balanced_braces(raw_output)
+    if candidate is not None:
+        parsed = _try_parse(candidate)
+        if parsed is not None:
+            return parsed
+
+    # Strategy 3: raw
+    parsed = _try_parse(raw_output)
+    if parsed is not None:
+        return parsed
+
+    raise JSONExtractionError(f"No valid JSON found: {raw_output[:200]!r}...")
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 app = FastAPI(title="Developer Node API")
@@ -33,12 +101,20 @@ def read_root():
     """Health check endpoint."""
     return {"status": "ok"}
 
+import re
+
 async def fetch_github_diff(repo_url: str, branch_name: str) -> str:
     github_token = os.getenv("GITHUB_TOKEN")
     if not github_token:
         raise ValueError("GITHUB_TOKEN is not set")
     
-    url = f"https://api.github.com/repos/{repo_url}/compare/main...{branch_name}"
+    # Parse the repo_url to handle full GitHub URLs or just owner/repo
+    match = re.search(r"github\.com/([^/]+/[^/]+)", repo_url)
+    clean_repo = match.group(1).replace(".git", "") if match else repo_url.strip()
+    # Strip any trailing slashes or URL paths that might have gotten caught if there were no extra slashes
+    clean_repo = clean_repo.split('/tree')[0].split('/pull')[0].split('/compare')[0]
+    
+    url = f"https://api.github.com/repos/{clean_repo}/compare/main...{branch_name}"
     headers = {
         "Authorization": f"token {github_token}",
         "Accept": "application/vnd.github.v3.diff"
@@ -127,18 +203,19 @@ async def evaluate_qc(request: QCRequest):
         result_text = await call_groq_api(QC_PROMPT)
             
         # Step D: Parse the Groq response
-        import re
         try:
-            clean_json = re.sub(r'^```json\s*|\s*```$', '', result_text.strip())
-            parsed_result = json.loads(clean_json)
+            parsed_result = extract_json_object(result_text)
             passed = parsed_result.get("passed", False)
             feedback = parsed_result.get("feedback", "")
             suggested_changes = parsed_result.get("suggested_changes")
             if suggested_changes and suggested_changes != "None":
                 feedback += f"\n\nSuggested Changes:\n{suggested_changes}"
-        except json.JSONDecodeError:
-            passed = False
-            feedback = "Failed to parse JSON response from Groq."
+        except JSONExtractionError as e:
+            logger.error("QC JSON extraction failed: %s", e)
+            raise HTTPException(
+                status_code=502,
+                detail="QC model did not return a parsable JSON verdict."
+            )
             
         new_status = "in_qa" if passed else "rejected"
         

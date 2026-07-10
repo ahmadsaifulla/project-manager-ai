@@ -29,6 +29,7 @@ from .schemas import (
     PMOutput,
     TaskModel,
     PlanTasksOutput,
+    tasks_to_wire,
 )
 
 
@@ -780,7 +781,7 @@ def plan_tasks_node(state: ProjectState, config: RunnableConfig) -> Dict[str, An
         db.close()
 
     return {
-        "tasks": tasks,
+        "tasks": tasks_to_wire(tasks),
         "current_focus": "idle",
     }
 

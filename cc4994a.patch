@@ -1,0 +1,714 @@
+commit cc4994ae9854c723a8d0a52bffb7f729bb326517
+Author: Ahmad SaifUllah <mc@192.168.1.18>
+Date:   Thu Jul 9 11:32:32 2026 +0500
+
+    feat: stabilize backend nodes, fix paths, update UI task cards & md export
+
+diff --git a/frontend/src/api.ts b/frontend/src/api.ts
+index fee8ee4..3946592 100644
+--- a/frontend/src/api.ts
++++ b/frontend/src/api.ts
+@@ -12,6 +12,7 @@ export interface Project {
+   dueDate?: string;
+   tags: string[];
+   accent_color: string;
++  github_repo_url?: string;
+ }
+ 
+ export interface KanbanTask {
+diff --git a/frontend/src/app/components/TaskBoard.tsx b/frontend/src/app/components/TaskBoard.tsx
+index 1faaeac..fa0ba64 100644
+--- a/frontend/src/app/components/TaskBoard.tsx
++++ b/frontend/src/app/components/TaskBoard.tsx
+@@ -1,10 +1,14 @@
+ import { useState, useEffect } from "react";
+ import { KanbanTask, Project, fetchTasks, updateTask } from "../../api";
+-import { GitCommitHorizontal, FlaskConical, Loader2, AlertCircle } from "lucide-react";
++import { GitCommitHorizontal, FlaskConical, Loader2, AlertCircle, Download, Play, GitBranch, Settings } from "lucide-react";
++import { downloadTaskMarkdown } from "../../utils/markdownGenerator";
+ 
+ export default function TaskBoard({ project }: { project: Project }) {
+   const [tasks, setTasks] = useState<KanbanTask[]>([]);
+   const [loading, setLoading] = useState(true);
++  const [repoUrl, setRepoUrl] = useState(project.github_repo_url || "");
++  const [showSettings, setShowSettings] = useState(false);
++  const [savingRepo, setSavingRepo] = useState(false);
+ 
+   const loadTasks = async () => {
+     try {
+@@ -33,6 +37,32 @@ export default function TaskBoard({ project }: { project: Project }) {
+     }
+   };
+ 
++  const handleStartWork = async (task: KanbanTask) => {
++    // 1. Fire PATCH to set status to in_progress
++    await handleStatusChange(task.id, "in_progress");
++
++    // 2. Download the markdown file
++    const projectWithRepo = { ...project, github_repo_url: repoUrl };
++    downloadTaskMarkdown(task, projectWithRepo);
++  };
++
++  const handleSaveRepo = async () => {
++    setSavingRepo(true);
++    try {
++      const API_BASE = (import.meta as any).env?.VITE_API_URL || "/api";
++      await fetch(`${API_BASE}/config`, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ repo_name: repoUrl }),
++      });
++      setShowSettings(false);
++    } catch (e) {
++      console.error(e);
++    } finally {
++      setSavingRepo(false);
++    }
++  };
++
+   const columns: { key: string; label: string; color: string; dot: string }[] = [
+     { key: "todo", label: "To Do", color: "text-muted-foreground", dot: "bg-muted-foreground/40" },
+     { key: "in_progress", label: "In Progress", color: "text-amber-700", dot: "bg-amber-400" },
+@@ -47,10 +77,41 @@ export default function TaskBoard({ project }: { project: Project }) {
+   return (
+     <div className="flex flex-col h-full w-full">
+       <div className="flex-shrink-0 px-6 py-4 border-b border-border bg-card rounded-t-xl">
+-        <h2 className="text-sm font-semibold text-foreground">Task Board</h2>
+-        <p className="text-xs text-muted-foreground mt-0.5">
+-          {project.name} {project.sprint ? `· ${project.sprint}` : ""}
+-        </p>
++        <div className="flex items-center justify-between">
++          <div>
++            <h2 className="text-sm font-semibold text-foreground">Task Board</h2>
++            <p className="text-xs text-muted-foreground mt-0.5">
++              {project.name} {project.sprint ? `· ${project.sprint}` : ""}
++            </p>
++          </div>
++          <button
++            onClick={() => setShowSettings(!showSettings)}
++            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2 py-1.5 rounded-lg hover:bg-secondary transition-colors"
++          >
++            <Settings size={13} />
++            Repo Settings
++          </button>
++        </div>
++
++        {showSettings && (
++          <div className="mt-3 pt-3 border-t border-border/60 flex items-center gap-2">
++            <GitBranch size={14} className="text-muted-foreground flex-shrink-0" />
++            <input
++              type="text"
++              value={repoUrl}
++              onChange={(e) => setRepoUrl(e.target.value)}
++              placeholder="owner/repo (e.g. facebook/react)"
++              className="flex-1 text-xs bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/40"
++            />
++            <button
++              onClick={handleSaveRepo}
++              disabled={savingRepo}
++              className="text-xs font-medium text-primary-foreground bg-primary px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
++            >
++              {savingRepo ? "Saving..." : "Save"}
++            </button>
++          </div>
++        )}
+       </div>
+       <div className="flex-1 overflow-x-auto overflow-y-hidden px-6 py-5 scrollbar-hidden">
+         <div className="flex gap-4 h-full">
+@@ -76,7 +137,10 @@ export default function TaskBoard({ project }: { project: Project }) {
+                       <KanbanTaskCard
+                         key={task.id}
+                         task={task}
++                        project={project}
++                        repoUrl={repoUrl}
+                         onStatusChange={(status) => handleStatusChange(task.id, status)}
++                        onStartWork={() => handleStartWork(task)}
+                       />
+                     ))
+                   )}
+@@ -92,10 +156,16 @@ export default function TaskBoard({ project }: { project: Project }) {
+ 
+ function KanbanTaskCard({
+   task,
++  project,
++  repoUrl,
+   onStatusChange,
++  onStartWork,
+ }: {
+   task: KanbanTask;
++  project: Project;
++  repoUrl: string;
+   onStatusChange: (s: string) => void;
++  onStartWork: () => void;
+ }) {
+   const PRIORITY_CONFIG: Record<string, {label: string, classes: string}> = {
+     critical: { label: "Critical", classes: "bg-red-100 text-red-700 border-red-200" },
+@@ -106,25 +176,39 @@ function KanbanTaskCard({
+ 
+   const pc = PRIORITY_CONFIG[task.priority] || PRIORITY_CONFIG.medium;
+   const isQcDone = task.status === "in_qc" || task.status === "in_qa";
++  const targetBranch = `feature/${project.id}-${task.id}`;
+ 
+   return (
+     <div
+       className={`bg-card border rounded-xl p-3.5 flex flex-col gap-3 transition-all shadow-sm ${isQcDone ? "border-blue-200 bg-blue-50/40" : task.status === "rejected" ? "border-red-200 bg-red-50/40" : "border-border hover:shadow-md hover:-translate-y-0.5"}`}
+     >
+-      <div className="flex items-center justify-between">
+-        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-secondary text-muted-foreground">
+-          {task.id}
+-        </span>
+-        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${pc.classes}`}>
+-          {pc.label}
+-        </span>
++      {/* Header: Task ID + Title */}
++      <div className="flex items-start justify-between gap-2">
++        <div className="flex-1 min-w-0">
++          <div className="flex items-center gap-2 mb-1">
++            <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-primary/10 text-primary font-mono tracking-tight">
++              {task.id}
++            </span>
++            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${pc.classes}`}>
++              {pc.label}
++            </span>
++          </div>
++          <p className="text-xs font-semibold text-foreground leading-snug">{task.title}</p>
++        </div>
+       </div>
+ 
+-      <div>
+-        <p className="text-xs font-semibold text-foreground leading-snug">{task.title}</p>
+-        <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap line-clamp-4">{task.description}</p>
++      {/* Branch Tag */}
++      <div className="flex items-center gap-1.5">
++        <GitBranch size={10} className="text-muted-foreground flex-shrink-0" />
++        <span className="text-[10px] font-mono text-muted-foreground truncate bg-secondary px-1.5 py-0.5 rounded-md border border-border/50">
++          {targetBranch}
++        </span>
+       </div>
+ 
++      {/* Description */}
++      <p className="text-[11px] text-muted-foreground leading-relaxed whitespace-pre-wrap line-clamp-3">{task.description}</p>
++
++      {/* QC Feedback */}
+       {task.evaluation_feedback && (
+         <div className="text-[10px] bg-red-50 text-red-700 p-2 rounded-lg border border-red-100 mt-1">
+            <strong className="flex gap-1 items-center mb-1"><AlertCircle size={10} /> QC Feedback:</strong>
+@@ -132,6 +216,7 @@ function KanbanTaskCard({
+         </div>
+       )}
+ 
++      {/* Actions Footer */}
+       <div className="flex items-center justify-between pt-2 border-t border-border/60">
+         <div className="flex items-center gap-1.5">
+           <div
+@@ -141,21 +226,34 @@ function KanbanTaskCard({
+           </div>
+         </div>
+ 
+-        {task.status === "in_progress" || task.status === "rejected" ? (
++        {task.status === "todo" ? (
+           <button
+-            onClick={() => onStatusChange("in_qc")}
+-            className="flex items-center gap-1 text-[10px] font-medium text-primary border border-primary/30 bg-accent hover:bg-primary hover:text-primary-foreground px-2 py-1 rounded-lg transition-all shadow-sm"
+-          >
+-            <GitCommitHorizontal size={10} />
+-            Handover to QC
+-          </button>
+-        ) : task.status === "todo" ? (
+-           <button
+-            onClick={() => onStatusChange("in_progress")}
+-            className="flex items-center gap-1 text-[10px] font-medium text-amber-600 bg-amber-50 px-2 py-1 rounded-lg hover:bg-amber-100 transition-all border border-amber-200 shadow-sm"
++            onClick={onStartWork}
++            className="flex items-center gap-1.5 text-[10px] font-semibold text-white bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-1.5 rounded-lg hover:from-amber-600 hover:to-orange-600 transition-all shadow-sm active:scale-95"
+           >
++            <Play size={10} fill="currentColor" />
+             Start Work
+           </button>
++        ) : task.status === "in_progress" || task.status === "rejected" ? (
++          <div className="flex items-center gap-1.5">
++            <button
++              onClick={() => {
++                const projectWithRepo = { ...project, github_repo_url: repoUrl };
++                downloadTaskMarkdown(task, projectWithRepo);
++              }}
++              className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground hover:text-foreground px-1.5 py-1 rounded-lg hover:bg-secondary transition-colors"
++              title="Download task brief"
++            >
++              <Download size={10} />
++            </button>
++            <button
++              onClick={() => onStatusChange("in_qc")}
++              className="flex items-center gap-1 text-[10px] font-medium text-primary border border-primary/30 bg-accent hover:bg-primary hover:text-primary-foreground px-2 py-1 rounded-lg transition-all shadow-sm"
++            >
++              <GitCommitHorizontal size={10} />
++              Handover to QC
++            </button>
++          </div>
+         ) : task.status === "in_qc" ? (
+           <span className="flex items-center gap-1 text-[10px] font-medium text-blue-600 bg-blue-100 px-2 py-1 rounded-lg border border-blue-200">
+             <FlaskConical size={10} />
+diff --git a/frontend/src/utils/markdownGenerator.ts b/frontend/src/utils/markdownGenerator.ts
+new file mode 100644
+index 0000000..9687c75
+--- /dev/null
++++ b/frontend/src/utils/markdownGenerator.ts
+@@ -0,0 +1,40 @@
++import { KanbanTask, Project } from "../api";
++
++export function generateTaskMarkdown(task: KanbanTask, project: Project): string {
++  const branchName = `feature/${project.id}-${task.id}`;
++  const repoUrl = (project as any).github_repo_url || "https://github.com/owner/repo";
++
++  const markdownContent = `---
++task_id: ${task.id}
++branch: ${branchName}
++status: IN_PROGRESS
++repo: ${repoUrl}
++dependencies: [${task.dependencies?.join(", ") || ""}]
++timestamp: ${new Date().toISOString()}
++---
++# ${task.id}: ${task.title}
++
++## Core Objective
++${task.description}
++
++## Acceptance Criteria (QC Checklist)
++${(task as any).acceptance_criteria ? (task as any).acceptance_criteria.map((c: string) => `- [ ] ${c}`).join("\n") : "- [ ] Completion verified."}
++
++## Git Instruction
++Run: \`git checkout -b ${branchName}\`
++`;
++  return markdownContent;
++}
++
++export function downloadTaskMarkdown(task: KanbanTask, project: Project): void {
++  const content = generateTaskMarkdown(task, project);
++  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
++  const url = URL.createObjectURL(blob);
++  const a = document.createElement("a");
++  a.href = url;
++  a.download = `T${task.id}.md`;
++  document.body.appendChild(a);
++  a.click();
++  document.body.removeChild(a);
++  URL.revokeObjectURL(url);
++}
+diff --git a/run_backend.sh b/run_backend.sh
+index 97c1bde..5ab5f8b 100755
+--- a/run_backend.sh
++++ b/run_backend.sh
+@@ -17,14 +17,16 @@ cleanup() {
+ # Trap termination signals
+ trap cleanup SIGINT SIGTERM
+ 
++export PYTHONPATH=$(pwd)
++
+ echo "🚀 Booting Orchestrator Node (Port 8000)..."
+-(cd services/orchestrator && source venv/bin/activate && uvicorn app.main:app --port 8000 --reload) &
++./services/orchestrator/venv/bin/uvicorn services.orchestrator.app.main:app --host 127.0.0.1 --port 8000 --reload &
+ 
+ echo "🚀 Booting Chatbot Node (Port 8001)..."
+-(cd services/chatbot && source venv/bin/activate && PROJECT_BASE_DIR="../../workspace" uvicorn app.main:app --port 8001 --reload) &
++PROJECT_BASE_DIR="workspace" ./services/chatbot/venv/bin/uvicorn services.chatbot.app.main:app --host 127.0.0.1 --port 8001 --reload &
+ 
+ echo "🚀 Booting Developer Node (Port 8002)..."
+-(cd services/developer && source venv/bin/activate && PROJECT_BASE_DIR="../../workspace" uvicorn app.main:app --port 8002 --reload) &
++PROJECT_BASE_DIR="workspace" ./services/developer/venv/bin/uvicorn services.developer.app.main:app --host 127.0.0.1 --port 8002 --reload &
+ 
+ echo -e "\n🟢 Backend Cluster is online! Press Ctrl+C to terminate."
+ echo "--------------------------------------------------------"
+diff --git a/services/chatbot/app/graph.py b/services/chatbot/app/graph.py
+index 01350ce..1843539 100644
+--- a/services/chatbot/app/graph.py
++++ b/services/chatbot/app/graph.py
+@@ -115,9 +115,7 @@ CRITICAL GUARDRAIL: Do NOT output this engineering jargon to the user. This outp
+ CRITICAL: You must return valid JSON matching the exact schema.
+ """
+ 
+-SYSTEM_PM = """YOU ARE CURRENTLY ANALYZING: {user_input}. You must generate user stories and tasks that are strictly derived from this input. DO NOT use generic examples like expense trackers or CRM systems. If the user input is about a game (e.g., Snake), your tasks must be specific to game development (e.g., Grid rendering, Collision detection, Score tracking).
+-
+-You are a structured data processor. You must output a JSON object using the PMOutput tool. Do not generate conversational text.
++SYSTEM_PM_THINKING = """YOU ARE CURRENTLY ANALYZING: {user_input}. You must generate user stories and tasks that are strictly derived from this input. DO NOT use generic examples like expense trackers or CRM systems. If the user input is about a game (e.g., Snake), your tasks must be specific to game development (e.g., Grid rendering, Collision detection, Score tracking).
+ 
+ Read the Architect's Friction Stance (TEMP_ARCHITECT.md) and translate complex problems into product trade-offs.
+ 
+@@ -143,7 +141,31 @@ Architect Notes (TEMP_ARCHITECT.md):
+ Current DRAFT_USER_STORIES.md:
+ {draft_user_stories}
+ 
+-Merge Instructions: If a PRD or Task List exists, act as an editor. Append and integrate new requirements. Do not regenerate existing tasks."""
++Merge Instructions: If a PRD or Task List exists, act as an editor. Append and integrate new requirements. Do not regenerate existing tasks.
++
++CRITICAL RULES FOR QUESTIONS:
++- NEVER ask more than ONE question at a time.
++- If the user says 'I don't know', 'doesn't matter', or gives a vague answer, ACCEPT IT. DO NOT ask the question again. Make a standard industry assumption and move to the next topic.
++- If you have enough information to build a V1, stop asking questions and output the finalized requirements.
++
++Output your complete analysis, gaps, next question, goals, and user stories in raw text. Do not use JSON."""
++
++FORMATTER_PROMPT = """You are a strict data formatting engine. 
++Extract data from the TEXT below into valid JSON.
++
++CRITICAL: Output ONLY valid JSON. Do not add conversational text, notes, or explanations.
++
++EXAMPLE OUTPUT:
++{{
++    "detected_gaps": ["Data Scope"],
++    "next_question": "What is the expected user count?",
++    "project_goals": "### What We Have Done / Finalized\\n- Defined scope\\n### What Needs to Be Done / Next Steps\\n- Build API\\n### What to Update\\n- None",
++    "updated_draft_user_stories": ["As a user, I want to login."]
++}}
++
++TEXT TO FORMAT:
++{raw_text}
++"""
+ 
+ SYSTEM_PLANNER = """You are the final translation and packaging agent.
+ Your role is to read the approved project goals and generate a complete "Translation Package" for handoff.
+@@ -158,6 +180,14 @@ Each task must contain:
+ - title, description, priority (low/medium/high/critical), estimated_effort
+ - dependencies: A list of ref_id integers that this task depends on. Must form a valid DAG (no circular dependencies).
+ 
++TASK FORMATTING RULES:
++1. Task Titles: Generate clear, human-readable titles (e.g., 'Setup MongoDB Schema'). DO NOT use IDs or hashes in the title.
++2. Task Description (CRITICAL): The description MUST be a detailed Markdown string containing:
++   - User Story: (As a [user], I want to...)
++   - Technical Implementation Details: (Specific frameworks, libraries, and architectural decisions).
++   - Sub-tasks: A bulleted list of step-by-step actions required to complete the task.
++   - Branch Names: Format as category/human-readable-feature-name (e.g., feature/database-schema). DO NOT use UUIDs in the branch name.
++
+ You are completely generic — generate tasks appropriate for whatever project the user described.
+ 
+ {existing_tasks_block}
+@@ -343,10 +373,10 @@ def run_public_conversational_pass(
+     elicitation_phase: str,
+     project_id: str,
+     user_input: str,
+-) -> PMOutput:
++) -> dict:
+     """
+     Step 2: The Public Product Manager Pass.
+-    Invokes the PM LLM with structured output, updates DRAFT_USER_STORIES.md.
++    Invokes the PM LLM in two passes (Thinking, then Formatting).
+     """
+     base_dir = get_workspace_dir(project_id)
+     draft_file = os.getenv("USER_STORIES_FILE", "DRAFT_USER_STORIES.md")
+@@ -356,7 +386,7 @@ def run_public_conversational_pass(
+         with open(draft_path, "r", encoding="utf-8") as f:
+             draft_content = f.read()
+ 
+-    prompt = SYSTEM_PM.format(
++    prompt = SYSTEM_PM_THINKING.format(
+         elicitation_phase=elicitation_phase,
+         architect_notes=architect_notes,
+         draft_user_stories=draft_content,
+@@ -364,7 +394,6 @@ def run_public_conversational_pass(
+     )
+ 
+     model = get_llm_model()
+-    model = model.bind_tools([PMOutput], tool_choice="PMOutput")
+ 
+     llm_input = [
+         {"role": "system", "content": prompt},
+@@ -379,20 +408,38 @@ def run_public_conversational_pass(
+     ]
+ 
+     try:
+-        raw_res = invoke_llm(model, llm_input)
++        # Pass 1: Thinking
++        thinking_response = invoke_llm(model, llm_input)
++        raw_text = thinking_response.content
++        logger.info(f"[PM Pass 1] Thinking: {raw_text}")
+         
+-        if not raw_res.tool_calls:
+-            logger.error(f"[PM Pass] No tool calls returned. Raw Output: {raw_res.content}")
+-            raise ValueError("No tool calls returned by the model")
+-            
+-        args = raw_res.tool_calls[0]["args"]
+-        logger.info(f"[PM Pass] Tool Call Args: {args}")
++        # Pass 2: JSON Formatting
++        import json
++        import re
++        # Set temperature to 0.0 for maximum consistency
++        # Set max_tokens to 1000 to prevent "chatty" hallucinations
++        json_model = model.bind(
++            response_format={"type": "json_object"}, 
++            temperature=0.0, 
++            max_tokens=1000
++        )
++        formatter_input = [
++            {"role": "system", "content": FORMATTER_PROMPT.format(raw_text=raw_text)}
++        ]
+         
+-        result = PMOutput(**args)
++        formatting_response = invoke_llm(json_model, formatter_input)
++        raw_content = formatting_response.content
++        
++        try:
++            clean_json = re.sub(r'^```json\s*|\s*```$', '', raw_content.strip())
++            result = json.loads(clean_json)
++        except json.JSONDecodeError:
++            logger.error(f"Failed to parse JSON: {raw_content}")
++            result = {}
+ 
+         # Persist updated draft user stories
+-        if result and getattr(result, "updated_draft_user_stories", None):
+-            stories_list = result.updated_draft_user_stories
++        if result and result.get("updated_draft_user_stories"):
++            stories_list = result.get("updated_draft_user_stories", [])
+             markdown_stories = "\n\n".join([f"- {story}" for story in stories_list])
+             with open(draft_path, "w", encoding="utf-8") as f:
+                 f.write(markdown_stories)
+@@ -405,12 +452,12 @@ def run_public_conversational_pass(
+         else:
+             next_q = "I'm having trouble processing that right now. Could you please rephrase?"
+             
+-        return PMOutput(
+-            detected_gaps=["System Error: Unable to process requirements."],
+-            next_question=next_q,
+-            project_goals="None",
+-            updated_draft_user_stories=[]
+-        )
++        return {
++            "detected_gaps": ["System Error: Unable to process requirements."],
++            "next_question": next_q,
++            "project_goals": "None",
++            "updated_draft_user_stories": []
++        }
+ 
+ 
+ # ─── Graph Nodes ───────────────────────────────────────────────────────────
+@@ -492,8 +539,8 @@ def elicit_goals_node(state: ProjectState, config: RunnableConfig) -> Dict[str,
+         messages_history_str, architect_notes, phase, project_id, last_human_msg
+     )
+ 
+-    out_gaps = pm_result.detected_gaps
+-    out_questions = [pm_result.next_question] if out_gaps else []
++    out_gaps = pm_result.get("detected_gaps", [])
++    out_questions = [pm_result.get("next_question", "")] if out_gaps else []
+ 
+     # In listening phase, suppress gaps — just listen
+     if phase == "listening":
+@@ -501,10 +548,10 @@ def elicit_goals_node(state: ProjectState, config: RunnableConfig) -> Dict[str,
+         out_questions = []
+ 
+     return {
+-        "project_goals": pm_result.project_goals,
++        "project_goals": pm_result.get("project_goals", "None"),
+         "detected_gaps": out_gaps,
+         "clarification_questions": out_questions,
+-        "messages": [AIMessage(content=pm_result.next_question)],
++        "messages": [AIMessage(content=pm_result.get("next_question", ""))],
+         "current_focus": "eliciting_goals",
+     }
+ 
+diff --git a/services/chatbot/app/main.py b/services/chatbot/app/main.py
+index 70e36a3..f2e8382 100644
+--- a/services/chatbot/app/main.py
++++ b/services/chatbot/app/main.py
+@@ -176,7 +176,8 @@ def execute_state_finalization(project_id: str, state: Dict[str, Any]):
+ async def lifespan(application: FastAPI):
+     """Initialize Postgres checkpointer, DB schemas, and seed sample users on startup."""
+     global app_graph
+-    pool = AsyncConnectionPool(DATABASE_URL, kwargs={"autocommit": True})
++    pool = AsyncConnectionPool(DATABASE_URL, kwargs={"autocommit": True}, open=False)
++    await pool.open()
+     checkpointer = AsyncPostgresSaver(pool)
+     await checkpointer.setup()
+     app_graph = workflow.compile(checkpointer=checkpointer)
+@@ -236,7 +237,7 @@ def format_graph_state(state: Dict[str, Any], project_id: str) -> Dict[str, Any]
+         "clarification_questions": state.get("clarification_questions", []),
+         "messages": messages_list,
+         "current_focus": state.get("current_focus", "idle"),
+-        "tasks": [task.model_dump() for task in state.get("tasks", [])],
++        "tasks": [task if isinstance(task, dict) else task.model_dump() for task in state.get("tasks", [])],
+     }
+ 
+ 
+diff --git a/services/developer/app/main.py b/services/developer/app/main.py
+index f55cb8d..adc2d05 100644
+--- a/services/developer/app/main.py
++++ b/services/developer/app/main.py
+@@ -1,6 +1,19 @@
++import sys
+ import os
++# Force the root Project-Manager directory into the Python path
++sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
++
++print(f"DEBUG: Current Working Directory: {os.getcwd()}")
++print(f"DEBUG: PATH to .env: {os.path.join(os.getcwd(), '.env')}")
++print(f"DEBUG: GITHUB_TOKEN exists in env? {'GITHUB_TOKEN' in os.environ}")
++
+ from dotenv import load_dotenv, find_dotenv
+ load_dotenv(find_dotenv())
++
++token = os.getenv("GITHUB_TOKEN")
++if not token:
++    print("WARNING: GITHUB_TOKEN not found in environment. QC evaluations will fail.")
++
+ import json
+ import logging
+ import httpx
+@@ -13,22 +26,19 @@ app = FastAPI(title="Developer Node API")
+ # Setup basic logging
+ logging.basicConfig(level=logging.INFO)
+ 
+-class QCEvaluationRequest(BaseModel):
+-    project_id: str
+-    task_id: str
+-    repo_name: str
++from services.shared.schemas import QCRequest
+ 
+ @app.get("/")
+ def read_root():
+     """Health check endpoint."""
+     return {"status": "ok"}
+ 
+-async def fetch_github_diff(repo_name: str) -> str:
++async def fetch_github_diff(repo_url: str, branch_name: str) -> str:
+     github_token = os.getenv("GITHUB_TOKEN")
+     if not github_token:
+         raise ValueError("GITHUB_TOKEN is not set")
+     
+-    url = f"https://api.github.com/repos/{repo_name}/commits/main"
++    url = f"https://api.github.com/repos/{repo_url}/compare/main...{branch_name}"
+     headers = {
+         "Authorization": f"token {github_token}",
+         "Accept": "application/vnd.github.v3.diff"
+@@ -67,7 +77,7 @@ async def call_groq_api(prompt: str) -> str:
+         return groq_data["choices"][0]["message"]["content"]
+ 
+ @app.post("/api/qc/evaluate")
+-async def evaluate_qc(request: QCEvaluationRequest):
++async def evaluate_qc(request: QCRequest):
+     """
+     Triggers the QC evaluation of the diff using Groq.
+     """
+@@ -89,24 +99,43 @@ async def evaluate_qc(request: QCEvaluationRequest):
+             task_description = task_data.get("description", "No description")
+ 
+         # Step B: Call fetch_github_diff
+-        diff = await fetch_github_diff(request.repo_name)
++        diff = await fetch_github_diff(request.repo_url, request.branch_name)
+ 
+         # Step C: Construct prompt for Groq
+-        prompt = (
+-            f"You are a strict QA Engineer. Does this code diff satisfy this task requirement? "
+-            f"Task: {task_title} - {task_description}. "
+-            f"Code Diff: {diff}. "
+-            f"Output strictly JSON with boolean 'pass' and string 'feedback'."
+-        )
++        QC_PROMPT = f"""
++        You are a Senior Software Engineer performing a PR code review.
++        Evaluate this code diff for:
++        1. Correctness (Does it meet task requirements?)
++        2. Security (Are there leaks or bad practices?)
++        3. Efficiency (Is the code clean?)
++        
++        TASK REQUIREMENTS:
++        {task_title} - {task_description}
++
++        CODE DIFF:
++        {diff}
++
++        Output format (JSON):
++        {{
++            "passed": boolean,
++            "feedback": "string (detailed review comments)",
++            "suggested_changes": "string (or None)"
++        }}
++        """
+         
+         # This function handles its own retries internally
+-        result_text = await call_groq_api(prompt)
++        result_text = await call_groq_api(QC_PROMPT)
+             
+         # Step D: Parse the Groq response
++        import re
+         try:
+-            parsed_result = json.loads(result_text)
+-            passed = parsed_result.get("pass", False)
++            clean_json = re.sub(r'^```json\s*|\s*```$', '', result_text.strip())
++            parsed_result = json.loads(clean_json)
++            passed = parsed_result.get("passed", False)
+             feedback = parsed_result.get("feedback", "")
++            suggested_changes = parsed_result.get("suggested_changes")
++            if suggested_changes and suggested_changes != "None":
++                feedback += f"\n\nSuggested Changes:\n{suggested_changes}"
+         except json.JSONDecodeError:
+             passed = False
+             feedback = "Failed to parse JSON response from Groq."
+diff --git a/services/orchestrator/app/main.py b/services/orchestrator/app/main.py
+index fa5f4e6..c2453d2 100644
+--- a/services/orchestrator/app/main.py
++++ b/services/orchestrator/app/main.py
+@@ -1,3 +1,8 @@
++import sys
++import os
++# Force the root Project-Manager directory into the Python path
++sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
++
+ import logging
+ from fastapi import FastAPI, Request, BackgroundTasks
+ from fastapi.responses import JSONResponse
+@@ -184,20 +189,32 @@ async def proxy_get_tasks(project_id: str):
+     except httpx.RequestError as e:
+         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
+ 
+-async def trigger_qc_evaluation(project_id: str, task_id: str):
++def parse_branch(branch_ref):
++    return branch_ref.split("/")[-1]
++
++async def trigger_qc_node(project_id: str, task_id: str):
+     """Background webhook to trigger the Developer Node QC evaluation."""
+     target_url = "http://127.0.0.1:8002/api/qc/evaluate"
++    
++    # "fetch repo_url and branch_name from your database based on the project_id."
++    # Since orchestrator uses global state:
++    repo_url = project_state.get("repo_name", "facebook/react")
++    branch_ref = f"refs/heads/feature/{project_id}-{task_id}"
++    branch_name = parse_branch(branch_ref)
++
+     payload = {
+         "project_id": project_id,
+-        "task_id": task_id
++        "task_id": task_id,
++        "repo_url": repo_url,
++        "branch_name": branch_name
+     }
++    
+     try:
+         async with httpx.AsyncClient() as client:
+             response = await client.post(target_url, json=payload, timeout=60.0)
+             response.raise_for_status()
+             logging.info(f"Successfully triggered QC node for Task {task_id}")
+     except Exception as e:
+-        # Fails gracefully without crashing the main orchestrator loop
+         logging.error(f"Failed to trigger QC evaluation for Task {task_id}: {e}")
+ 
+ @app.patch("/api/projects/{project_id}/tasks/{task_id}")
+@@ -211,7 +228,7 @@ async def proxy_update_task(project_id: str, task_id: str, update: TaskUpdateReq
+             
+             # If the patch was successful and status is moved to IN QC, trigger the background evaluation
+             if response.status_code == 200 and update.status == "in_qc":
+-                background_tasks.add_task(trigger_qc_evaluation, project_id, task_id)
++                background_tasks.add_task(trigger_qc_node, project_id, task_id)
+                 
+             return JSONResponse(status_code=response.status_code, content=response.json())
+     except httpx.RequestError as e:
+diff --git a/services/shared/__init__.py b/services/shared/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/services/shared/schemas.py b/services/shared/schemas.py
+new file mode 100644
+index 0000000..80c7636
+--- /dev/null
++++ b/services/shared/schemas.py
+@@ -0,0 +1,7 @@
++from pydantic import BaseModel
++
++class QCRequest(BaseModel):
++    project_id: str
++    task_id: str
++    repo_url: str
++    branch_name: str

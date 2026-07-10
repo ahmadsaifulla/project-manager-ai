@@ -117,9 +117,25 @@ class ProjectState(TypedDict):
     elicitation_phase: str  # "listening" | "stress_testing" | "goals_approved"
 
     # Structured data computed by agents
-    tasks: List[Task]
+    tasks: List[dict]
 
     # Elicitation state
     clarification_questions: List[str]
     detected_gaps: List[str]  # Dynamic list of outstanding requirements gaps
     current_focus: Optional[str]  # e.g., "eliciting_goals", "planning_tasks", "idle"
+
+# ─── Wire/Working Format Helpers ──────────────────────────────────────────
+
+def task_to_wire(task: Task) -> dict:
+    """Pydantic model -> checkpoint-safe dict. Enums become their .value strings."""
+    return task.model_dump(mode="json")
+
+def tasks_to_wire(tasks: List[Task]) -> List[dict]:
+    return [task_to_wire(t) for t in tasks]
+
+def wire_to_task(d: dict) -> Task:
+    """Checkpoint dict -> Pydantic model. Re-validates and re-hydrates Enums."""
+    return Task.model_validate(d)
+
+def wire_to_tasks(dicts: List[dict]) -> List[Task]:
+    return [wire_to_task(d) for d in dicts]
