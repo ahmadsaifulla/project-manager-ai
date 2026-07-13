@@ -20,6 +20,8 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
+from services.shared.naming_utils import generate_task_id
+
 from .schemas import (
     ProjectState,
     Task,
@@ -66,7 +68,7 @@ def get_llm_model():
         )
 
     return ChatGroq(
-        model="llama-3.1-8b-instant",
+        model="llama-3.3-70b-versatile",
         temperature=0.1,
         max_retries=2,
         max_tokens=4000,
@@ -638,6 +640,10 @@ def plan_tasks_node(state: ProjectState, config: RunnableConfig) -> Dict[str, An
         if clean_text.endswith("```"): clean_text = clean_text[:-3]
         clean_text = clean_text.strip()
         
+        # Fallback: if LLM returned a raw list, wrap it in an object
+        if clean_text.startswith("[") and clean_text.endswith("]"):
+            clean_text = f'{{"tasks": {clean_text}}}'
+            
         result = PlanTasksOutput.model_validate_json(clean_text)
     except Exception as e:
         logger.error(f"[PlanTasks] Error or bad JSON: {e}")
@@ -645,15 +651,29 @@ def plan_tasks_node(state: ProjectState, config: RunnableConfig) -> Dict[str, An
         # Return an empty PlanTasksOutput to allow graceful continuation
         result = PlanTasksOutput(tasks=[])
 
-    # ── Phase 2: Build ref_id → UUID mapping ──────────────────────────
-    # If the LLM returned an existing UUID, reuse it. Otherwise, mint a new one.
+    # ── Phase 2: Build ref_id → ID mapping ────────────────────────────
+    # Calculate base_index from existing_db_tasks using Max Index Scan
+    base_index = 0
+    if existing_db_tasks:
+        indices = []
+        for t in existing_db_tasks:
+            try:
+                idx_str = t.id.split("-tsk-")[-1]
+                indices.append(int(idx_str))
+            except (ValueError, IndexError):
+                pass
+        if indices:
+            base_index = max(indices)
+
     ref_to_uuid: Dict[int, str] = {}
+    new_task_counter = 1
     for t in result.tasks:
         if t.id == "NEW" or t.id not in existing_ids:
-            # New task — generate a fresh UUID
-            ref_to_uuid[t.ref_id] = f"{project_id[:8]}-{uuid.uuid4().hex[:8]}"
+            # New task — generate a deterministic ID
+            ref_to_uuid[t.ref_id] = generate_task_id(project_id, base_index + new_task_counter)
+            new_task_counter += 1
         else:
-            # LLM echoed back a known UUID — reuse it
+            # LLM echoed back a known ID — reuse it
             ref_to_uuid[t.ref_id] = t.id
 
     # ── Phase 3: Construct Task objects ───────────────────────────────

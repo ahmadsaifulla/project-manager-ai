@@ -138,7 +138,7 @@ async def call_groq_api(prompt: str) -> str:
         "Content-Type": "application/json"
     }
     groq_payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"}
     }

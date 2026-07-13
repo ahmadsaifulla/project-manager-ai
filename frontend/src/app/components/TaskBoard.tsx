@@ -182,7 +182,7 @@ function KanbanTaskCard({
 
   const pc = PRIORITY_CONFIG[task.priority] || PRIORITY_CONFIG.medium;
   const isQcDone = task.status === "in_qc" || task.status === "in_qa";
-  const targetBranch = `feature/${project.id}-${task.id}`;
+  const targetBranch = `feature/${task.id}`;
 
   return (
     <div

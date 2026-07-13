@@ -1,7 +1,7 @@
 import { KanbanTask, Project } from "../api";
 
 export function generateTaskMarkdown(task: KanbanTask, project: Project): string {
-  const branchName = `feature/${project.id}-${task.id}`;
+  const branchName = `feature/${task.id}`;
   const repoUrl = (project as any).github_repo_url || "https://github.com/owner/repo";
 
   const markdownContent = `---

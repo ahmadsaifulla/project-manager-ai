@@ -11,6 +11,8 @@ import httpx
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
+from services.shared.naming_utils import generate_branch_name
+
 class ProjectCreateRequest(BaseModel):
     id: str
     name: str
@@ -87,7 +89,7 @@ async def proxy_qc_evaluation(request: Request):
     
     # Inject branch_name using the single source of truth
     if "branch_name" not in payload and "project_id" in payload and "task_id" in payload:
-        payload["branch_name"] = build_branch_name(payload["project_id"], payload["task_id"])
+        payload["branch_name"] = generate_branch_name(payload["task_id"])
         
     target_url = f"{get_config()['developer_node_url']}/api/qc/evaluate"
     
@@ -187,16 +189,12 @@ async def proxy_get_tasks(project_id: str):
     except httpx.RequestError as e:
         return JSONResponse(status_code=502, content={"detail": f"Bad Gateway: {e}"})
 
-def build_branch_name(project_id: str, task_id: str) -> str:
-    """Single source of truth for branch naming — matches frontend convention."""
-    return f"feature/{project_id}-{task_id}"
-
 async def trigger_qc_node(project_id: str, task_id: str):
     """Background webhook to trigger the Developer Node QC evaluation."""
     target_url = "http://127.0.0.1:8002/api/qc/evaluate"
     
     repo_url = get_config().get("repo_name", "facebook/react")
-    branch_name = build_branch_name(project_id, task_id)
+    branch_name = generate_branch_name(task_id)
 
     payload = {
         "project_id": project_id,
